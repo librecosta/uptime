@@ -3,7 +3,7 @@ package app
 import (
 	"crypto/tls"
 
-	"github.com/deepfurry/uptime/internal/config"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 func buildTLSConfig(cfg *config.TLSConfig) *tls.Config {

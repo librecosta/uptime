@@ -8,9 +8,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/deepfurry/uptime/internal/config"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	"github.com/gofiber/fiber/v3"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 type runtimeStore interface {

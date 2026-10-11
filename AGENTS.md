@@ -2,7 +2,7 @@
 
 ## Repository Purpose
 
-DeepFurry Uptime is a small, self-hosted uptime product built around Fiber.
+LibreCosta Uptime is a small, self-hosted uptime product built around Fiber.
 P1 provides a public bbolt backend; P2 adds strict configuration loading;
 P3 composes Fiber/Uptime into `serve` with bbolt, plain HTTP, health endpoints,
 and graceful shutdown. P4 adds upstream Redis persistence. P5 adds static native
@@ -67,7 +67,7 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Target-service failure is monitoring data; Uptime runtime failure is operational health.
 - No hot reload, management UI, user account system, alerting, APM, or unrelated
   monitoring expansion without an explicit architecture decision.
-- Preserve MIT `LICENSE`; use DeepFurry organization community files rather than
+- Preserve MIT `LICENSE`; use [LibreCosta organization community files](https://github.com/librecosta/.github) rather than
   adding local Code of Conduct, Contributing, or Security copies.
 - Do not create empty future packages or advertise unimplemented CLI commands.
 

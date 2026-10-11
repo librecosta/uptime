@@ -17,7 +17,7 @@ slot deduplication, counters, and related metadata to change atomically. This
 choice accepts single-process file ownership and offline maintenance rather
 than introducing a database service for the default deployment.
 
-The `github.com/deepfurry/uptime/storage/bbolt` package is public so a
+The `github.com/librecosta/uptime/storage/bbolt` package is public so a
 third-party Fiber application can reuse it without running the standalone
 product. It implements Fiber Contrib Uptime's exported `uptime/storage.Store`
 contract and never imports this repository's `internal/*` packages. A compile-time

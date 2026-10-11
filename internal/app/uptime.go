@@ -5,9 +5,9 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/deepfurry/uptime/internal/config"
 	"github.com/gofiber/contrib/v3/uptime"
 	"github.com/gofiber/fiber/v3"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 func buildUptimeConfig(app *fiber.App, store *runtimeStorage, cfg config.Config) uptime.Config {

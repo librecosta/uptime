@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/deepfurry/uptime/internal/config"
-	"github.com/deepfurry/uptime/storage/bbolt"
 	"github.com/gofiber/contrib/v3/uptime"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
+	"github.com/librecosta/uptime/internal/config"
+	"github.com/librecosta/uptime/storage/bbolt"
 )
 
 const testDeadline = 8 * time.Second

@@ -6,10 +6,10 @@ import (
 	"errors"
 	"net"
 
-	"github.com/deepfurry/uptime/internal/config"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 // Run opens storage, binds before constructing Uptime, and blocks until stopped.

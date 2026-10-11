@@ -11,7 +11,7 @@ One binary, one YAML file, and zero external infrastructure required by default.
 
 ## Overview
 
-DeepFurry Uptime aims to make HTTP service availability and persistent history
+LibreCosta Uptime aims to make HTTP service availability and persistent history
 easy to operate in a small standalone product. Fiber Contrib Uptime provides
 the monitoring engine; the product composes its configuration, storage, and
 runtime lifecycle.
@@ -39,7 +39,7 @@ the intended behavior and boundaries.
 
 ## Current Development Status
 
-P1 adds `github.com/deepfurry/uptime/storage/bbolt`, directly implementing Fiber
+P1 adds `github.com/librecosta/uptime/storage/bbolt`, directly implementing Fiber
 Contrib Uptime v0.2.0's public `storage.Store` contract using bbolt v1.5.0. It
 provides schema-versioned persistence, atomic service-level heartbeat deduplication,
 rollup, queries, cleanup, explicit service removal, and contract tests.
@@ -261,6 +261,7 @@ injection; no release packaging workflow exists.
 - [Change Playbook](.agents/playbook.md)
 - [Architecture Decisions](docs/decisions/README.md)
 - [Changelog](CHANGELOG.md)
+- [LibreCosta community files](https://github.com/librecosta/.github)
 
 ## License
 

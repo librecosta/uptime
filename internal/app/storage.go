@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/deepfurry/uptime/internal/config"
-	"github.com/deepfurry/uptime/storage/bbolt"
 	"github.com/gofiber/contrib/v3/uptime"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/librecosta/uptime/internal/config"
+	"github.com/librecosta/uptime/storage/bbolt"
 	"github.com/redis/go-redis/v9"
 )
 

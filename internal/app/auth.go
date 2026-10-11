@@ -4,9 +4,9 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/deepfurry/uptime/internal/config"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/basicauth"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 func isProtectedUIPath(path, uiPath string) bool {

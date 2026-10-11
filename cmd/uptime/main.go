@@ -11,9 +11,9 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/deepfurry/uptime/internal/app"
-	"github.com/deepfurry/uptime/internal/config"
 	"github.com/gofiber/fiber/v3/log"
+	"github.com/librecosta/uptime/internal/app"
+	"github.com/librecosta/uptime/internal/config"
 )
 
 var (

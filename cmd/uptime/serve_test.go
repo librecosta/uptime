@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/deepfurry/uptime/storage/bbolt"
+	"github.com/librecosta/uptime/storage/bbolt"
 )
 
 func TestServeHelpAndUsage(t *testing.T) {

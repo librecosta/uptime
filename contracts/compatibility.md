@@ -20,7 +20,7 @@ P1 adds the public `storage/bbolt` package: `Config`, `Store`, `Open`, the upstr
 Store methods, and `Name`, `Ping`, `RemoveService`, `Close`. Raw database/bucket
 access is private. P2's `internal/config.LoadFile` adds the product configuration
 contract; it does not open storage or construct a standalone runtime.
-The module is `github.com/deepfurry/uptime`; its Go baseline is 1.26. Go support
+The module is `github.com/librecosta/uptime`; its Go baseline is 1.26. Go support
 follows the active Fiber major version's supported window; CI covers 1.26.x and
 1.27.x. Updating that window requires coordinated module, CI, and documentation
 changes.

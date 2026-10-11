@@ -1,4 +1,4 @@
-module github.com/deepfurry/uptime
+module github.com/librecosta/uptime
 
 go 1.26.0
 

@@ -29,6 +29,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Move the Go module to `github.com/librecosta/uptime`; external users must
+  update module requirements and imports from the former DeepFurry path.
+
 - Active auth now rejects non-bcrypt verifiers and usernames containing colons or
   Unicode controls; pinned x/crypto and x/text dependencies are now direct.
 - Validate active Redis URLs with pinned go-redis ParseURL and reject fragments,

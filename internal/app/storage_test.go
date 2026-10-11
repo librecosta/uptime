@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/deepfurry/uptime/internal/config"
 	"github.com/gofiber/fiber/v3"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/librecosta/uptime/internal/config"
 	"github.com/redis/go-redis/v9"
 )
 
