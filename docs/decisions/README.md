@@ -1,5 +1,7 @@
 # Architecture Decision Records
 
+- [0001: Loopback defaults and first access](0001-local-first-startup.md) — Accepted.
+
 ADRs preserve the context, decision, consequences, and rejected alternatives of
 significant architectural changes so later contributors can understand why a
 boundary exists.

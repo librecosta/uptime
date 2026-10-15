@@ -1,4 +1,4 @@
-# Uptime
+# LibreCosta Uptime
 
 A tiny, self-hosted uptime service built around Fiber.
 
@@ -40,7 +40,7 @@ the intended behavior and boundaries.
 ## Current Development Status
 
 P1 adds `github.com/librecosta/uptime/storage/bbolt`, directly implementing Fiber
-Contrib Uptime v0.2.0's public `storage.Store` contract using bbolt v1.5.0. It
+Contrib Uptime v0.2.2's public `storage.Store` contract using bbolt v1.5.0. It
 provides schema-versioned persistence, atomic service-level heartbeat deduplication,
 rollup, queries, cleanup, explicit service removal, and contract tests.
 
@@ -48,11 +48,13 @@ P2 adds normalized configuration and `config check`. No-argument invocation show
 help; help/version remain available. Unknown commands or unexpected arguments
 return usage errors. Configuration uses stable YAML v3 with no CLI/config framework.
 
-P3 adds `serve`, composing Fiber v3.5.0 and Fiber Uptime v0.2.0 with the public
+P3 adds `serve`, composing Fiber v3.5.0 and Fiber Uptime v0.2.2 with the public
 bbolt Store. The runtime monitors only configured endpoints, with no self service.
 P4 adds optional Redis persistence through Fiber Storage Redis and Uptime's native
 Redis backend, retaining bbolt as the zero-infrastructure default.
 P5 adds native static TLS and Fiber BasicAuth for the dashboard/API namespace.
+P5.5 completes LibreCosta branding, defaults to loopback access, redirects the
+root to the configured dashboard, and upgrades Fiber Uptime to v0.2.2.
 
 ## Validate Configuration
 
@@ -82,7 +84,7 @@ without comparing a password. Disabled auth values remain ignored.
 No configuration or secret values are dumped. Avoid placing secrets in URLs.
 
 See the [configuration and CLI contract](contracts/compatibility.md) for defaults,
-field rules, and normalization. Description/footer may be omitted for DeepFurry
+field rules, and normalization. Description/footer may be omitted for LibreCosta
 defaults but cannot be explicitly empty; an empty favicon URL remains valid.
 
 ## Run the Service
@@ -97,10 +99,20 @@ uptime serve --config ./uptime.yaml
 From source, use `go run ./cmd/uptime serve --config ./uptime.yaml`.
 `serve` defaults to `./uptime.yaml`; `serve --help` documents its only configuration
 flag. Relative file paths use the process working directory. The default listener
-is `:8080`, and bbolt uses `./data/uptime.db` with exclusive file ownership.
+is `127.0.0.1:18580`, and bbolt uses `./data/uptime.db` with exclusive file ownership.
+Open **http://127.0.0.1:18580/** locally; it redirects to the configured `ui.path`
+(default `/uptime`). Successful startup logs the product, bound address, HTTP/HTTPS,
+and dashboard entry. HTTPS entries require a hostname or IP covered by your certificate.
+
+For public, Docker, or reverse proxy deployments needing access from other hosts,
+explicitly set `server.address: ":18580"` and publish/forward that port as appropriate.
+A proxy on the same host can use the default loopback listener. Existing explicit
+addresses, including `:8080`, retain their behavior. See
+[ADR 0001](docs/decisions/0001-local-first-startup.md) for the default change.
 
 | Route | Behavior |
 | --- | --- |
+| GET/HEAD `/` | 302 to the configured `ui.path`, without forwarding query parameters |
 | `/livez` | 200 `ok`, without checking storage or targets |
 | `/readyz` | 200 `ready` after listen with a successful one-second-context storage Ping; otherwise 503 `not ready` |
 | `/uptime` | Built-in Fiber Uptime dashboard (configurable `ui.path`) |
@@ -108,7 +120,8 @@ is `:8080`, and bbolt uses `./data/uptime.db` with exclusive file ownership.
 
 Health bodies end in a newline and use `text/plain; charset=utf-8` and
 `Cache-Control: no-store`. A DOWN target does not make the monitor unready.
-The root `/` returns 404; it does not redirect to the dashboard.
+The root redirect is public; following it still requires dashboard authentication
+when enabled. Other methods on `/` and unmatched routes remain 404.
 
 Serving supports **bbolt or Redis, HTTP or HTTPS, and optional Basic Auth**.
 Startup storage/schema/lock, preflight Ping, or bind failures are fatal. Later storage operation
@@ -148,7 +161,7 @@ Auth is optional and independent of TLS: HTTP/public, HTTP/Auth, HTTPS/public,
 and HTTPS/Auth are supported. It protects the exact `ui.path` and slash descendants
 including the status API. For `/status`, `/status2` and `/status-page` are outside
 the protected namespace. `/livez` and `/readyz` always remain public. The realm is
-fixed to `DeepFurry Uptime`; there is one account and no login page or session.
+fixed to `LibreCosta Uptime`; there is one account and no login page or session.
 
 Set `UPTIME_AUTH_PASSWORD_HASH` to a bcrypt hash, not a plaintext password or SHA
 verifier. Unicode usernames are allowed and normalized to NFC. For non-ASCII

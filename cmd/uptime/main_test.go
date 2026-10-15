@@ -27,7 +27,7 @@ func TestHelp(t *testing.T) {
 			if stderr.Len() != 0 {
 				t.Errorf("unexpected stderr: %s", &stderr)
 			}
-			for _, want := range []string{"DeepFurry Uptime", "Usage:", "uptime [command]", "help", "version", "config check", "serve", "-h", "--help", "--version"} {
+			for _, want := range []string{"LibreCosta Uptime", "Usage:", "uptime [command]", "help", "version", "config check", "serve", "-h", "--help", "--version"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("help missing %q: %s", want, &stdout)
 				}
@@ -51,7 +51,7 @@ func TestVersion(t *testing.T) {
 			if stderr.Len() != 0 {
 				t.Errorf("unexpected stderr: %s", &stderr)
 			}
-			for _, want := range []string{"DeepFurry Uptime " + version, "Go: " + runtime.Version(), "Commit: " + commit} {
+			for _, want := range []string{"LibreCosta Uptime " + version, "Go: " + runtime.Version(), "Commit: " + commit} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("version missing %q: %s", want, &stdout)
 				}

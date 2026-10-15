@@ -2,7 +2,8 @@
 #   uptime config check --config configs/uptime.example.yaml
 # Filesystem paths are relative to the process working directory, not this file.
 server:
-  address: ":8080"
+  # Loopback by default. Set ":18580" explicitly for public/Docker/proxy access.
+  address: "127.0.0.1:18580"
   shutdown_timeout: 10s
   tls:
     # When enabled: HTTPS only, static matching cert/key, TLS 1.2 minimum.
@@ -36,7 +37,7 @@ ui:
   path: /uptime
   title: Service Status
   description: Current service availability.
-  footer: Powered by DeepFurry Uptime.
+  footer: Powered by LibreCosta Uptime.
   favicon_url: ""
   thresholds:
     green: 0.999

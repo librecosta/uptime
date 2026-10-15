@@ -47,7 +47,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 
 | Field | Omitted value |
 | --- | --- |
-| `server.address` | `:8080` |
+| `server.address` | `127.0.0.1:18580` |
 | `server.shutdown_timeout` | `10s` |
 | `server.tls.enabled`, `auth.enabled` | `false` |
 | `storage.type` | `bbolt` |
@@ -58,7 +58,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `uptime.timezone` | `UTC` |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
 | `ui.description` | `Current service availability.` |
-| `ui.footer` | `Powered by DeepFurry Uptime.` |
+| `ui.footer` | `Powered by LibreCosta Uptime.` |
 | `ui.favicon_url` | empty, built-in favicon |
 | `ui.thresholds.green`, `ui.thresholds.yellow` | `0.999`, `0.99` |
 | endpoint `name`, `method` | its literal ID, `GET` |
@@ -66,6 +66,10 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | endpoint `description`, `headers`, `expected_status_codes` | empty |
 
 Explicit empty required values are errors, never replaced by defaults.
+P5.5 changes the omitted listener from `:8080` to loopback `127.0.0.1:18580`.
+Explicit addresses retain their syntax and behavior. Public, Docker, and remote
+proxy access can use `:18580` explicitly; a local proxy may keep loopback.
+See [ADR 0001](../docs/decisions/0001-local-first-startup.md).
 
 ### Environment and Active Branches
 
@@ -93,7 +97,7 @@ are not expanded or semantically validated and do not survive normalization.
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
 | Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; UTC/IANA/Local timezone |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
-| UI text | description/footer must be non-empty; omission uses DeepFurry defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
+| UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
 | Endpoint identity | at least one; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
 | Endpoint request | literal uppercase GET/HEAD; http/https URL with host, no userinfo/fragment, query allowed |
 | Endpoint timing | interval >= 1s; 1ms <= timeout <= effective endpoint interval |
@@ -117,7 +121,7 @@ binds ports, or constructs Fiber/Uptime. Errors identify fields/categories witho
 printing Redis credentials, hashes, header values, secret URL queries, TLS keys,
 or environment values. Do not implement config stringification or dumps.
 
-## Standalone Runtime (P3–P5)
+## Standalone Runtime (P3–P5.5)
 
 `serve` loads normalized configuration and accepts bbolt or Redis, HTTP or HTTPS,
 and optional single-user Basic Auth. `rediss://` secures the outbound Redis
@@ -139,7 +143,7 @@ and semantic validation and leaves Auth nil.
 Fiber official BasicAuth protects exactly `ui.path` and paths starting with
 `ui.path + "/"`. For `/status`, `/status2` and `/status-page` stay outside auth.
 Health always remains public. Missing/wrong credentials receive Fiber's 401 Basic
-challenge with fixed realm `DeepFurry Uptime`, `Cache-Control: no-store`, and
+challenge with fixed realm `LibreCosta Uptime`, `Cache-Control: no-store`, and
 `Vary: Authorization`; the response body is not a product ABI. Correct credentials
 permit the dashboard/API; authenticated unknown descendants remain 404.
 BasicAuth constructor rejection becomes the safe operational error
@@ -156,6 +160,12 @@ failures, unexpected Listener return (including nil), shutdown/close errors, and
 output failures return 1. Usage errors return 2. Operational errors use a safe
 `serve: <error>` stderr diagnostic; runtime does not dump config or secrets.
 Lifecycle logging uses Fiber's official logger on stderr, with no startup banner.
+The successful OnListen log identifies LibreCosta Uptime, the bound listener,
+HTTP/HTTPS, and the configured dashboard path. HTTP on loopback prints its actual
+local URL. Wildcard listeners use a host placeholder; HTTPS always uses a
+certificate-host placeholder and asks for a certificate-covered hostname/IP,
+without assuming localhost is valid. Logs never include endpoint/Redis URLs,
+request headers, auth credentials, or the normalized configuration.
 
 | Route | Exact response |
 | --- | --- |
@@ -167,7 +177,9 @@ Both health routes set `Content-Type: text/plain; charset=utf-8` and
 documented blocked-I/O cancellation limits still apply. Failures expose no details
 and produce no per-request error log. Target DOWN never changes readiness.
 The configured `ui.path` and `<ui.path>/api/status` are upstream dashboard/API
-routes. Root `/` remains 404 without a dashboard redirect. Only YAML endpoints
+routes. GET/HEAD `/` returns HTTP 302 to the validated `ui.path`, without copying the
+incoming query. The redirect is public; the target dashboard/API still requires
+Basic Auth when enabled. Other root methods and unmatched paths remain 404. Only YAML endpoints
 are monitored; no self service is manufactured.
 
 Startup opens selected storage, completes preflight Ping, and binds before

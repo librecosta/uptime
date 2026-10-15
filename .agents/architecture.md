@@ -5,7 +5,8 @@ P2 adds `internal/config`, called directly by `cmd/uptime config check`, alongsi
 help/version. P3 adds `internal/app` and `serve`: bbolt, plain HTTP, upstream
 endpoint probing, built-in dashboard/API, health, and shutdown. The diagram shows
 the implemented composition. P4 adds optional upstream Redis persistence; P5 adds
-static native TLS and single-user Basic Auth. Archive remains future work.
+static native TLS and single-user Basic Auth. P5.5 adds loopback defaults, a root
+redirect, LibreCosta branding, and Uptime v0.2.2. Archive remains future work.
 
 ```text
 cmd/uptime
@@ -47,7 +48,7 @@ upstream API in a new abstraction.
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
 | `contracts` | Stable engineering constraints | Present |
 | `docs/design` | Design rationale and implementation baselines | Present |
-| `docs/decisions` | Significant changes after the initial baseline | ADR guide only |
+| `docs/decisions` | Significant changes after the initial baseline | Loopback default and first access ADR |
 
 ## Invariants
 
@@ -70,9 +71,9 @@ upstream API in a new abstraction.
   Fiber App.Listener. TLS uses the loaded certificate with a TLS 1.2 minimum,
   never rereads files or downgrades to HTTP. Keep the tracked transport inside TLS
   so timeout force-close can unblock a stalled handshake before storage closes.
-- Middleware order is Recover -> public health -> optional Fiber BasicAuth ->
+- Middleware order is Recover -> public health -> GET/HEAD root redirect -> optional Fiber BasicAuth ->
   Uptime -> default 404. Construct BasicAuth before Uptime with a narrow safe panic
-  boundary. Its fixed realm is DeepFurry Uptime; it protects only the exact UI path
+  boundary. Its fixed realm is LibreCosta Uptime; it protects only the exact UI path
   and slash descendants. No custom header parser or password verifier.
 - Active auth validates one NFC-normalized non-empty username without colon or
   Unicode controls and a bcrypt hash ($2a$/$2b$/$2y$, structure plus bcrypt.Cost).

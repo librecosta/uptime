@@ -37,7 +37,7 @@ func buildUptimeConfig(app *fiber.App, store *runtimeStorage, cfg config.Config)
 	return u
 }
 
-// v0.2.0 returns a handler and panics on constructor rejection. Convert that
+// v0.2.2 returns a handler and panics on constructor rejection. Convert that
 // boundary to an operational error; do not intercept runtime degraded storage.
 func newUptime(cfg uptime.Config) (handler fiber.Handler, err error) {
 	defer func() {

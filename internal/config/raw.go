@@ -68,7 +68,7 @@ func defaultTo[T any](field **T, value T) {
 }
 
 func (r *rawConfig) defaults() {
-	defaultTo(&r.Server.Address, ":8080")
+	defaultTo(&r.Server.Address, "127.0.0.1:18580")
 	defaultTo(&r.Server.ShutdownTimeout, "10s")
 	defaultTo(&r.Storage.Type, "bbolt")
 	defaultTo(&r.Storage.Bbolt.Path, "./data/uptime.db")
@@ -80,7 +80,7 @@ func (r *rawConfig) defaults() {
 	defaultTo(&r.UI.Path, "/uptime")
 	defaultTo(&r.UI.Title, "Service Status")
 	defaultTo(&r.UI.Description, "Current service availability.")
-	defaultTo(&r.UI.Footer, "Powered by DeepFurry Uptime.")
+	defaultTo(&r.UI.Footer, "Powered by LibreCosta Uptime.")
 	defaultTo(&r.UI.Thresholds.Green, 0.999)
 	defaultTo(&r.UI.Thresholds.Yellow, 0.99)
 	for i := range r.Endpoints {

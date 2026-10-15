@@ -159,21 +159,33 @@ func TestEndpointIntegration(t *testing.T) {
 			})
 			r.health(t, "/livez", 200, "ok\n")
 			r.health(t, "/readyz", 200, "ready\n")
-			for _, path := range []string{cfg.UI.Path, cfg.UI.Path + "/api/status", "/"} {
+			for _, path := range []string{cfg.UI.Path, cfg.UI.Path + "/api/status", "/random"} {
 				response, err := r.client.Get(r.base + path)
 				must(t, err)
 				data, err := io.ReadAll(response.Body)
 				response.Body.Close()
 				must(t, err)
 				want := 200
-				if path == "/" {
+				if path == "/random" {
 					want = 404
 				}
 				if response.StatusCode != want || strings.Contains(string(data), "PRIVATE") {
 					t.Fatalf("route %s: status=%d or secret exposed", path, response.StatusCode)
 				}
-				if path == cfg.UI.Path && !strings.Contains(string(data), cfg.UI.Title) {
-					t.Fatal("built-in dashboard missing configured title")
+				if path == cfg.UI.Path+"/api/status" {
+					var snapshot uptime.StatusResponse
+					must(t, json.Unmarshal(data, &snapshot))
+					if len(snapshot.Services) != 1 || len(snapshot.Services[0].Daily) != int(cfg.Uptime.Window) || snapshot.SampleIntervalSeconds != 1 || snapshot.GeneratedAt.IsZero() {
+						t.Fatal("upstream status snapshot contract changed")
+					}
+					for _, field := range []string{`"summary":`, `"has_data":`, `"availability_rate":`, `"estimated_downtime_seconds":`, `"affected_days":`, `"stable_streak_days":`, `"stable_streak_capped":`} {
+						if !strings.Contains(string(data), field) {
+							t.Fatalf("status JSON missing Insights field %s", field)
+						}
+					}
+				}
+				if path == cfg.UI.Path && (!strings.Contains(string(data), cfg.UI.Title) || !strings.Contains(string(data), "Powered by LibreCosta Uptime.")) {
+					t.Fatal("built-in dashboard missing title or product footer")
 				}
 			}
 			r.cancel()

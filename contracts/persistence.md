@@ -3,8 +3,8 @@
 P1 implements these constraints in the public `storage/bbolt` package. P3 supplies
 the same public Store to Fiber Uptime's standalone runtime; Schema v1 is unchanged.
 The bbolt representation and guarantees below apply to that backend. P4 Redis
-persistence uses Uptime v0.2.0's native backend through Fiber Storage Redis;
-DeepFurry does not define Redis keys, serialization, or a Redis Store implementation.
+persistence uses Uptime v0.2.2's native backend through Fiber Storage Redis;
+LibreCosta does not define Redis keys, serialization, or a Redis Store implementation.
 
 ## Backend Selection and Ownership
 
@@ -22,6 +22,11 @@ DeepFurry does not define Redis keys, serialization, or a Redis Store implementa
   its client. Preserve both failures together with primary/shutdown errors.
 
 ## bbolt Schema v1
+
+LibreCosta branding does not rename the original format marker, change Schema v1,
+or change Redis's default `fiber:uptime` prefix. The planned (unimplemented)
+Service Archive format is `librecosta-uptime-service-archive`; it is unrelated to
+the existing bbolt format and does not trigger a data migration.
 
 - Every database has `meta/format = deepfurry-uptime-bbolt` and an eight-byte
   big-endian uint64 `meta/schema_version = 1`, plus services, instances, samples,

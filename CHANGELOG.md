@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P5.5: GET/HEAD `/` redirects with HTTP 302 to the configured UI path without
+  forwarding queries; startup logs show the listener, protocol, and dashboard entry.
+- Original bbolt Schema v1 fixture and redirect/authentication regression coverage.
+
 - Native static TLS using the preloaded certificate, TLS 1.2 minimum, and tracked
   connection draining, including stalled-handshake shutdown regression tests.
 - Optional Fiber BasicAuth for the UI namespace with public health routes, one
@@ -28,6 +32,14 @@ All notable changes to this project will be documented in this file.
   integration tests for UP/DOWN targets, persistence, cancellation, and failures.
 
 ### Changed
+
+- P5.5: omitted `server.address` now defaults to `127.0.0.1:18580`; explicitly
+  configure `:18580` for access beyond loopback. Explicit addresses keep their behavior.
+- Complete user-facing LibreCosta Uptime branding and rename the unimplemented
+  Service Archive plan, preserving the original MIT attribution, bbolt format,
+  Schema v1, and Redis `fiber:uptime` prefix.
+- Upgrade Fiber Uptime from v0.2.0 to v0.2.2 and only its required module versions;
+  see the upstream contract for the dependency and behavior review.
 
 - Move the Go module to `github.com/librecosta/uptime`; external users must
   update module requirements and imports from the former DeepFurry path.

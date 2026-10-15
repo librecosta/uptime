@@ -7,6 +7,8 @@ P1 provides a public bbolt backend; P2 adds strict configuration loading;
 P3 composes Fiber/Uptime into `serve` with bbolt, plain HTTP, health endpoints,
 and graceful shutdown. P4 adds upstream Redis persistence. P5 adds static native
 TLS and optional single-user Basic Auth using Fiber's official middleware.
+P5.5 adds loopback defaults, a configured root redirect, LibreCosta branding, and
+Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 
 ## Start Here
 

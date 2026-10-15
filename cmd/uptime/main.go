@@ -1,4 +1,4 @@
-// Command uptime provides the DeepFurry Uptime CLI.
+// Command uptime provides the LibreCosta Uptime CLI.
 package main
 
 import (
@@ -21,7 +21,7 @@ var (
 	commit  = "unknown"
 )
 
-const helpText = `DeepFurry Uptime
+const helpText = `LibreCosta Uptime
 
 Usage:
   uptime [command]
@@ -71,7 +71,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		_, err = io.WriteString(stdout, helpText)
 	case "version", "--version":
-		_, err = fmt.Fprintf(stdout, "DeepFurry Uptime %s\nGo: %s\nCommit: %s\n", version, runtime.Version(), commit)
+		_, err = fmt.Fprintf(stdout, "LibreCosta Uptime %s\nGo: %s\nCommit: %s\n", version, runtime.Version(), commit)
 	default:
 		return diagnostic(stderr, "error: unknown command or option; use 'uptime --help'", 2)
 	}

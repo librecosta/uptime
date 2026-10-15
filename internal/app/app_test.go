@@ -100,7 +100,7 @@ func TestUptimeMapping(t *testing.T) {
 	cfg.Endpoints[0].Method = "HEAD"
 	cfg.Endpoints[0].Headers = map[string]string{"Authorization": "Bearer secret"}
 	cfg.Endpoints[0].ExpectedStatusCodes = []int{200, 204}
-	f := fiber.New(fiber.Config{AppName: "DeepFurry Uptime"})
+	f := fiber.New(fiber.Config{AppName: "LibreCosta Uptime"})
 	store := &bbolt.Store{}
 	mapped := buildUptimeConfig(f, wrapBbolt(store), cfg)
 	if mapped.App != f || mapped.Storage != store || mapped.Store != nil || mapped.ServiceID != "" || mapped.ServiceName != "" || mapped.ServiceDescription != "" {

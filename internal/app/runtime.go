@@ -62,9 +62,15 @@ func (s *Server) Run(ctx context.Context) (result error) {
 		// force-closed and drained before releasing persistence.
 		serveListener = tls.NewListener(s.listener, buildTLSConfig(s.cfg.Server.TLS))
 	}
-	s.app = fiber.New(fiber.Config{AppName: "DeepFurry Uptime"})
+	s.app = fiber.New(fiber.Config{AppName: "LibreCosta Uptime"})
 	s.app.Use(recoverer.New())
 	s.registerHealth()
+	s.app.Use(func(c fiber.Ctx) error {
+		if c.Path() != "/" || (c.Method() != fiber.MethodGet && c.Method() != fiber.MethodHead) {
+			return c.Next()
+		}
+		return c.Redirect().Status(fiber.StatusFound).To(s.cfg.UI.Path)
+	})
 	s.app.Hooks().OnPreShutdown(func() error { s.ready.Store(false); return nil })
 	// Covers constructor rejection and every subsequent failure path.
 	defer func() { result = errors.Join(result, s.shutdown()) }()
@@ -82,7 +88,7 @@ func (s *Server) Run(ctx context.Context) (result error) {
 	s.app.Use(handler)
 	s.app.Hooks().OnListen(func(fiber.ListenData) error {
 		s.ready.Store(true)
-		log.Info("Uptime listening")
+		log.Info(startupMessage(s.listener.Addr().String(), s.cfg.UI.Path, s.cfg.Server.TLS != nil))
 		return nil
 	})
 
@@ -116,7 +122,7 @@ func (s *Server) Run(ctx context.Context) (result error) {
 	}
 	// The deferred shutdown returns this same error once, alongside Close errors.
 	if result == nil && shutdownErr == nil {
-		log.Info("Uptime HTTP server stopped")
+		log.Info("LibreCosta Uptime server stopped")
 	}
 	return result
 }
