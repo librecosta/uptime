@@ -12,12 +12,14 @@ import (
 
 // LoadFile validates one YAML document. Relative paths remain relative to the
 // process working directory. Only the YAML and active TLS files are read.
+// At least one endpoint is required; errors omit configured values.
 func LoadFile(path string) (Config, error) {
 	return loadFile(path, false)
 }
 
 // LoadServiceFile validates maintenance configuration. Only an explicitly empty
 // endpoints sequence is additionally allowed; omitted endpoints remain invalid.
+// All other validation and file access rules are the same as LoadFile.
 func LoadServiceFile(path string) (Config, error) {
 	return loadFile(path, true)
 }

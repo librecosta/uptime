@@ -68,6 +68,7 @@ func scanDays(ctx context.Context, b *bolt.Bucket, path, from, to string, fn fun
 // RollupDaily finalizes sample days before BeforeDay. The optional callback is
 // invoked synchronously outside all transactions and is never retained. A short
 // write transaction rechecks finalized state and reads the latest slot count.
+// Finalized rows are immutable, even if later heartbeats add raw samples.
 func (s *Store) RollupDaily(ctx context.Context, options uptimestorage.RollupOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -137,6 +138,8 @@ func (s *Store) RollupDaily(ctx context.Context, options uptimestorage.RollupOpt
 			return err
 		}
 		expected := 0
+		// Caller code may query or write this Store; holding a transaction here
+		// could deadlock it or keep the database locked during slow work.
 		if options.ExpectedSlots != nil {
 			expected = options.ExpectedSlots(c.service, c.day)
 		}
@@ -146,6 +149,8 @@ func (s *Store) RollupDaily(ctx context.Context, options uptimestorage.RollupOpt
 		if expected < 0 {
 			return fmt.Errorf("daily/%q/%s: negative expected slot count", c.service.ID, c.day)
 		}
+		// Candidates can go stale while the callback runs. Recheck existence and
+		// finality to avoid recreating removed history or overwriting a rollup.
 		err = s.update(ctx, func(tx *bolt.Tx) error {
 			service, err := child(tx.Bucket([]byte("services")), []byte(c.service.ID), "services/"+c.service.ID, false)
 			if err != nil || service == nil {

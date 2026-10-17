@@ -47,6 +47,9 @@ func decodeBool(b []byte) (bool, error) {
 	}
 	return b[0] == 1, nil
 }
+
+// encodeTime uses Schema v1's signed Unix nanoseconds, with zero reserved for an
+// unset time. The round trip detects overflow before it can corrupt a timestamp.
 func encodeTime(t time.Time) ([]byte, error) {
 	if t.IsZero() {
 		return encodeInt64(0), nil

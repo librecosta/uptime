@@ -92,6 +92,8 @@ func buildDistribution(ctx context.Context, root string, opts options,
 		return err
 	}
 	docs := make([]member, 0, 3)
+	// Keep a fixed source allowlist rather than walking the repository: local
+	// configurations, credentials and monitoring data must never enter an archive.
 	for _, file := range []struct{ source, name string }{
 		{"configs/uptime.example.yaml", "uptime.example.yaml"},
 		{"README.md", "README.md"}, {"LICENSE", "LICENSE"},
@@ -122,6 +124,8 @@ func buildDistribution(ctx context.Context, root string, opts options,
 	if err := writeChecksums(packages, opts.version); err != nil {
 		return err
 	}
+	// A successful compiler invocation alone does not make a complete distribution.
+	// Verify all five archives and checksums before the final path becomes visible.
 	if err := verifyDistribution(packages, opts); err != nil {
 		return err
 	}

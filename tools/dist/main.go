@@ -1,4 +1,6 @@
 // Command dist builds and verifies the five supported distribution archives.
+// Builds require the repository root, an explicit version and a full Git commit.
+// It creates local preview artifacts only, without tags, releases or registry uploads.
 package main
 
 import (

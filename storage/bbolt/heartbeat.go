@@ -11,6 +11,7 @@ import (
 
 // WriteHeartbeat atomically records a unique service/day/slot and advances
 // existing metadata. It does not register services or process instances.
+// Repeated writes to the same slot never increment the successful-slot count.
 func (s *Store) WriteHeartbeat(ctx context.Context, h uptimestorage.Heartbeat) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -155,6 +155,8 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer, op
 		return diagnostic(stderr, "service: "+err.Error(), 1)
 	}
 	if options.command == "remove" {
+		// Refuse current YAML IDs before even opening storage, including IDs
+		// that have never been persisted. This is not a lock on Redis writers.
 		if err := service.CheckDetached(options.id, configuredServiceIDs(cfg)); err != nil {
 			return diagnostic(stderr, "service: "+err.Error(), 1)
 		}

@@ -92,6 +92,9 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Preserve MIT `LICENSE`; use [LibreCosta organization community files](https://github.com/librecosta/.github) rather than
   adding local Code of Conduct, Contributing, or Security copies.
 - Do not create empty future packages or advertise unimplemented CLI commands.
+- When adding or changing public APIs or non-obvious engineering invariants, write
+  concise, accurate English GoDoc and comments explaining contracts and reasons,
+  not restating the code.
 - Distribution builds use the fixed module graph, explicit version/full SHA and
   CGO-free targets. Stage and verify all archives before publishing an output
   directory; refuse existing nonempty output and never package local config/data.

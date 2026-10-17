@@ -12,7 +12,8 @@ import (
 // Cleanup applies exclusive raw/daily retention bounds and expires instance
 // metadata whose last activity (LastSeenAt, falling back to StartedAt) is older
 // than 24 hours. Unknown activity is retained. Raw samples are processed before
-// daily proofs are deleted. No service metadata is removed and no worker is started.
+// daily records are deleted: only a finalized row permits deleting its raw samples.
+// No service metadata is removed and no worker is started.
 func (s *Store) Cleanup(ctx context.Context, options uptimestorage.CleanupOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -81,6 +82,8 @@ func (s *Store) Cleanup(ctx context.Context, options uptimestorage.CleanupOption
 	})
 }
 
+// pruneHistory collects eligible dates before deleting buckets so mutation cannot
+// invalidate the day cursor. Validation and deletion share the caller's transaction.
 func pruneHistory(ctx context.Context, tx *bolt.Tx, root, before string, eligible func(string, string, *bolt.Bucket) (bool, error)) error {
 	return eachBucket(ctx, tx.Bucket([]byte(root)), root, func(k []byte, days *bolt.Bucket) error {
 		id := string(k)

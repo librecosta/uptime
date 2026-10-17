@@ -189,6 +189,9 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 			n.fail("auth.basic.password_hash", "invalid bcrypt password hash")
 		}
 	}
+	// Preserve the distinction between omission and an explicit empty sequence:
+	// maintenance may operate after the last endpoint is retired, but not on an
+	// accidentally incomplete configuration. Structural validation rejects null.
 	if raw.Endpoints == nil || (!maintenance && len(raw.Endpoints) == 0) {
 		n.fail("endpoints", "at least one endpoint is required")
 	}

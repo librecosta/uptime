@@ -12,8 +12,11 @@ import (
 	"github.com/librecosta/uptime/internal/config"
 )
 
-// Run opens storage, binds before constructing Uptime, and blocks until stopped.
+// Run may be called only once. It opens and Pings storage, then binds the listener
+// before constructing Uptime, whose constructor starts workers. It blocks until
+// serving stops and closes storage only after workers and HTTP handlers finish.
 // Cancellation is successful only when shutdown and resource cleanup succeed.
+// An already-canceled context returns nil without I/O and still consumes the run.
 func (s *Server) Run(ctx context.Context) (result error) {
 	if !s.started.CompareAndSwap(false, true) {
 		return errors.New("server has already been run")
@@ -134,6 +137,8 @@ func (s *Server) shutdown() error {
 		if err != nil {
 			// fasthttp can return a deadline while handlers still use the store.
 			// Force connection I/O closed, then drain before releasing storage.
+			// This may outlast the timeout: closing transports cannot interrupt
+			// a handler blocked in arbitrary storage I/O.
 			s.listener.closeConnections()
 			s.listener.drained.Wait()
 		}

@@ -1,4 +1,6 @@
 // Command uptime provides the LibreCosta Uptime CLI.
+// Help and version need no configuration; config check validates without opening
+// storage. Only serve starts monitoring, while service commands use standalone sessions.
 package main
 
 import (
@@ -16,6 +18,8 @@ import (
 	"github.com/librecosta/uptime/internal/config"
 )
 
+// Distribution builds inject these with -ldflags -X; ordinary source runs retain
+// the development defaults without consulting Git or the working directory.
 var (
 	version = "dev"
 	commit  = "unknown"
@@ -50,6 +54,8 @@ func main() {
 	os.Exit(code)
 }
 
+// run returns 0 for success, 2 for usage errors, and 1 for operational or output
+// failures. Successful output goes to stdout and diagnostics to stderr.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "service" {
 		return serviceCommand(ctx, args[1:], stdout, stderr)

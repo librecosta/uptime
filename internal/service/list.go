@@ -1,4 +1,6 @@
 // Package service derives configuration status and guards explicit service removal.
+// Active and detached refer only to current YAML endpoint IDs, not availability
+// or evidence that other writers using shared Redis have stopped.
 package service
 
 import (

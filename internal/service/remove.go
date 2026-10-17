@@ -30,8 +30,9 @@ type RemovalStore interface {
 }
 
 // Remove verifies existence, deletes exactly once, then checks the observed result.
-// Call CheckDetached before opening store. The caller owns Close. Errors after a
-// deletion attempt cannot guarantee that data is unchanged; no retry is performed.
+// Call CheckDetached before opening store, and Close it before reporting success.
+// Remove does not own the storage lifetime. Errors after a deletion attempt cannot
+// guarantee that data is unchanged; no retry is performed.
 // Redis writers may recreate a service even after the read-back finds it absent.
 func Remove(ctx context.Context, store RemovalStore, id string) error {
 	if err := ctx.Err(); err != nil {

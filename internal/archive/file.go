@@ -10,6 +10,8 @@ import (
 // WriteFile serializes before creating a file, then publishes complete JSON
 // without replacing any existing file or symlink. Filesystems without hard-link
 // support fail safely. Parent directories must already exist.
+// Visibility relies on the filesystem's link semantics, not a portable rename
+// guarantee. Temporary-name cleanup can fail after a complete archive is published.
 func WriteFile(path string, archive Archive) error {
 	data, err := json.MarshalIndent(archive, "", "  ")
 	if err != nil {
@@ -46,5 +48,7 @@ func publish(path string, write func(*os.File) error, link func(string, string) 
 	if err := f.Close(); err != nil {
 		return err
 	}
+	// Linking the synced sibling file refuses an existing destination. A plain
+	// rename could overwrite it; writing directly would expose partial JSON.
 	return link(f.Name(), path)
 }

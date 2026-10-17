@@ -21,7 +21,7 @@ type ServiceStorage struct {
 
 // OpenServiceStorage accepts normalized configuration and opens only its selected
 // storage. bbolt requires an existing database and exclusive file access; Redis
-// initialization uses the caller's context with a five-second upper bound.
+// initialization adds a five-second deadline to the caller's context.
 // Context cancellation cannot forcibly interrupt all underlying disk/network I/O.
 // The caller owns the result and must Close it after all operations have stopped.
 func OpenServiceStorage(ctx context.Context, cfg config.Config) (*ServiceStorage, error) {
@@ -88,7 +88,8 @@ func (s *ServiceStorage) QueryTodaySamples(ctx context.Context, options uptimest
 }
 
 // RemoveService explicitly removes a service and its history. It does not check
-// whether a monitor is active; callers must coordinate deletion with writers.
+// YAML membership or require a registered service; policy belongs to the caller,
+// which must also coordinate deletion with other writers.
 // Atomicity follows the selected backend's contract.
 func (s *ServiceStorage) RemoveService(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {

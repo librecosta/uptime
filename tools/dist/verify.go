@@ -28,6 +28,9 @@ func verifyDistribution(dir string, opts options) error {
 	return nil
 }
 
+// verifyBinary inspects Go metadata and native executable headers without running
+// foreign binaries. Version/commit injection still needs a native smoke check:
+// trimmed Go builds do not retain linker flags in their build metadata.
 func verifyBinary(data []byte, t target) error {
 	r := bytes.NewReader(data)
 	info, err := buildinfo.Read(r)

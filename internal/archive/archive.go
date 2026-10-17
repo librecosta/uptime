@@ -1,4 +1,6 @@
 // Package archive exports service history through the public Store query contract.
+// Archive v1 is a read-only history export, not a restorable database backup.
+// Exporting starts no rollup or cleanup and does not provide a cross-query snapshot.
 package archive
 
 import (
@@ -25,9 +27,9 @@ type Reader interface {
 type Options struct {
 	ID                 string
 	ApplicationVersion string
-	Now                time.Time
-	Timezone           *time.Location
-	Interval           time.Duration
+	Now                time.Time      // Caller-supplied export time; serialized in UTC.
+	Timezone           *time.Location // Required location for local day boundaries.
+	Interval           time.Duration  // Fallback when the stored interval is less than one second.
 }
 
 // Archive is the frozen v1 JSON envelope. It deliberately contains no config,
@@ -64,6 +66,7 @@ type Daily struct {
 
 // CurrentDay combines raw up slots with a theoretical completed-slot count.
 // ExpectedSlotsSoFar does not establish that a detached service was monitored.
+// UpSlots is preserved without clamping; neither count is added to Daily rows.
 type CurrentDay struct {
 	Day                string `json:"day"`
 	UpSlots            int    `json:"up_slots"`
@@ -135,6 +138,8 @@ func utc(t time.Time) string {
 
 // Match pinned Uptime's expectedSlotsSoFarSince: floor both slot indices and
 // exclude the current slot. Calendar boundaries and Sub preserve DST elapsed time.
+// CreatedAt limits the first slot; LastSeenAt intentionally does not shorten the
+// expected monitoring period. AddDate avoids treating every local day as 24 hours.
 func expectedSlots(now, createdAt time.Time, interval time.Duration, loc *time.Location) int {
 	local := now.In(loc)
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
