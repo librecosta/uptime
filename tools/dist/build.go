@@ -91,12 +91,13 @@ func buildDistribution(ctx context.Context, root string, opts options,
 	if err := os.Mkdir(packages, 0755); err != nil {
 		return err
 	}
-	docs := make([]member, 0, 3)
+	docs := make([]member, 0, 4)
 	// Keep a fixed source allowlist rather than walking the repository: local
 	// configurations, credentials and monitoring data must never enter an archive.
 	for _, file := range []struct{ source, name string }{
 		{"configs/uptime.example.yaml", "uptime.example.yaml"},
 		{"README.md", "README.md"}, {"LICENSE", "LICENSE"},
+		{"docs/assets/uptime-dashboard.webp", "docs/assets/uptime-dashboard.webp"},
 	} {
 		data, err := readRegular(root, file.source)
 		if err != nil {

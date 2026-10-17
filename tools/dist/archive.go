@@ -57,9 +57,9 @@ func writeArchive(path string, t target, files []member) (err error) {
 	return nil
 }
 
-// readArchive validates the flat allowlist before any member can be extracted.
+// readArchive validates exact allowlisted paths before any member can be extracted.
 func readArchive(path string, t target) ([]member, error) {
-	want := []string{t.binary(), "uptime.example.yaml", "README.md", "LICENSE"}
+	want := []string{t.binary(), "uptime.example.yaml", "README.md", "LICENSE", "docs/assets/uptime-dashboard.webp"}
 	files := make([]member, 0, len(want))
 	add := func(name string, mode os.FileMode, r io.Reader) error {
 		if len(files) >= len(want) || name != want[len(files)] || !mode.IsRegular() {
@@ -132,7 +132,7 @@ func readArchive(path string, t target) ([]member, error) {
 		}
 	}
 	if len(files) != len(want) {
-		return nil, errors.New("archive must contain exactly four files")
+		return nil, errors.New("archive must contain exactly five files")
 	}
 	return files, nil
 }

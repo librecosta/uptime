@@ -39,10 +39,13 @@ Versions are 1..64 ASCII letters/digits/dot/underscore/hyphen, beginning with a
 letter/digit, excluding `..` and `unknown`. No shell interpolation is used.
 
 Archives are `librecosta-uptime_<version>_<GOOS>_<GOARCH>.tar.gz` (Unix) or `.zip`
-(Windows). Each has exactly four flat regular files in order: `uptime` or
-`uptime.exe` (0755), `uptime.example.yaml`, `README.md`, `LICENSE` (0644).
-The latter three are copied verbatim from their official repository sources;
-symlink sources are refused. Never package user configuration, secrets or data.
+(Windows). Each has exactly five regular files in order: `uptime` or
+`uptime.exe` (0755), `uptime.example.yaml`, `README.md`, `LICENSE`, and
+`docs/assets/uptime-dashboard.webp` (all four resources 0644).
+Resources are copied verbatim from their official repository sources; the image
+retains the relative path used by README. No separate directory entries or other
+paths are admitted. Symlink sources are refused, including parent components.
+Never package user configuration, secrets or data.
 `SHA256SUMS` contains exactly the five archive hashes in lexical filename order,
 using lowercase SHA-256, two spaces, filename and newline. No self-checksum.
 

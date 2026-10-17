@@ -74,6 +74,10 @@ func TestBuildCommand(t *testing.T) {
 
 func TestArchivesAndChecksums(t *testing.T) {
 	dir := t.TempDir()
+	preview, err := os.ReadFile(filepath.Join("..", "..", "docs", "assets", "uptime-dashboard.webp"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantNames := []string{
 		"librecosta-uptime_dev_darwin_amd64.tar.gz", "librecosta-uptime_dev_darwin_arm64.tar.gz",
 		"librecosta-uptime_dev_linux_amd64.tar.gz", "librecosta-uptime_dev_linux_arm64.tar.gz",
@@ -88,6 +92,7 @@ func TestArchivesAndChecksums(t *testing.T) {
 			{target.binary(), []byte("binary"), 0755},
 			{"uptime.example.yaml", []byte("official config\r\n"), 0644},
 			{"README.md", []byte("readme\n"), 0644}, {"LICENSE", []byte("original MIT\n"), 0644},
+			{"docs/assets/uptime-dashboard.webp", preview, 0644},
 		}
 		path := filepath.Join(dir, wantNames[i])
 		if err := writeArchive(path, target, files); err != nil {
@@ -141,14 +146,37 @@ func TestArchiveRejectsUnexpectedMembers(t *testing.T) {
 	}
 }
 
+func TestArchiveRequiresDashboardAtExactPath(t *testing.T) {
+	for _, target := range []target{{"linux", "amd64"}, {"windows", "amd64"}} {
+		for _, name := range []string{"", "uptime-dashboard.webp", "docs/assets/../uptime-dashboard.webp", `docs\assets\uptime-dashboard.webp`, ".env"} {
+			files := []member{
+				{target.binary(), []byte("binary"), 0755},
+				{"uptime.example.yaml", nil, 0644}, {"README.md", nil, 0644}, {"LICENSE", nil, 0644},
+			}
+			if name != "" {
+				files = append(files, member{name, []byte("image"), 0644})
+			}
+			path := filepath.Join(t.TempDir(), target.archive("dev"))
+			if err := writeArchive(path, target, files); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readArchive(path, target); err == nil {
+				t.Fatalf("accepted missing or misplaced dashboard %q in %s", name, target.os)
+			}
+		}
+	}
+}
+
 func TestBuildFailureAndExistingOutput(t *testing.T) {
 	for _, existing := range []string{"absent", "empty", "nonempty", "file"} {
 		t.Run(existing, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.Mkdir(filepath.Join(root, "configs"), 0755); err != nil {
-				t.Fatal(err)
+			for _, dir := range []string{"configs", "docs/assets"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+					t.Fatal(err)
+				}
 			}
-			for _, name := range []string{"README.md", "LICENSE", "configs/uptime.example.yaml"} {
+			for _, name := range []string{"README.md", "LICENSE", "configs/uptime.example.yaml", "docs/assets/uptime-dashboard.webp"} {
 				writeTestFile(t, filepath.Join(root, name), "source")
 			}
 			out := filepath.Join(root, "dist")
@@ -169,6 +197,12 @@ func TestBuildFailureAndExistingOutput(t *testing.T) {
 				func(_ context.Context, _, binary string, _ target, _ options) error {
 					calls++
 					if calls == 2 {
+						// Inspect the first package before failure cleanup removes staging.
+						path := filepath.Join(filepath.Dir(binary), "packages", targets[0].archive("dev"))
+						files, err := readArchive(path, targets[0])
+						if err != nil || len(files) != 5 || !bytes.Equal(files[4].data, []byte("source")) {
+							t.Fatalf("build omitted or changed the dashboard: %v", err)
+						}
 						return failure
 					}
 					return os.WriteFile(binary, []byte("binary"), 0755)
@@ -226,10 +260,12 @@ func TestPackagingAndCancellationFailureCleanup(t *testing.T) {
 	for _, kind := range []string{"archive", "verification", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.Mkdir(filepath.Join(root, "configs"), 0755); err != nil {
-				t.Fatal(err)
+			for _, dir := range []string{"configs", "docs/assets"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+					t.Fatal(err)
+				}
 			}
-			for _, name := range []string{"README.md", "LICENSE", "configs/uptime.example.yaml"} {
+			for _, name := range []string{"README.md", "LICENSE", "configs/uptime.example.yaml", "docs/assets/uptime-dashboard.webp"} {
 				writeTestFile(t, filepath.Join(root, name), "source")
 			}
 			ctx, cancel := context.WithCancel(context.Background())

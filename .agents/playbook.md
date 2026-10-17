@@ -163,6 +163,8 @@ go run ./tools/dist --verify --version dev --output dist
 Verification inspects packages without running binaries. Separately extract the
 host archive into a temporary directory, run `version` (match the supplied version
 and full SHA), `--help`, and `config check --config uptime.example.yaml` there.
+Each archive must contain the binary, example YAML, README, LICENSE, and unchanged
+`docs/assets/uptime-dashboard.webp`; check README's relative image after extraction.
 Config check must not create `data/`. Go omits linker flags from build metadata
 with `-trimpath`, so native execution is the version-injection acceptance check.
 The preview workflow performs these steps on Linux amd64 with Go 1.26.x and uploads
