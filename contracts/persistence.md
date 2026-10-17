@@ -31,6 +31,12 @@ No cross-call transaction guarantee, implicit cleanup, archive or deletion polic
 is added. Offline configuration rejects Redis retention above 106750 days so its
 `(days + 1) * 24h` expiry fits `time.Duration`; bbolt retains calendar-day semantics.
 
+P6-B2 applies deletion policy above this backend boundary: refuse YAML-active IDs
+before opening storage, require a persisted detached ID, delete once via the session,
+and read back before Close and success output. The public backend APIs remain
+policy-free. Redis read-back cannot prevent other writers from recreating data;
+failed operations or Close do not guarantee that an attempted deletion was rolled back.
+
 ## bbolt Schema v1
 
 LibreCosta branding does not rename the original format marker, change Schema v1,

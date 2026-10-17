@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P6-B2: `service remove <id>` refuses configured IDs before opening storage,
+  requires persisted history, deletes through the standalone session, and reads
+  back/closes before success output. Includes last-service retirement, offline
+  locking, Redis prefix isolation, and safe failure regression coverage.
+
 - P6-B1: `service list` with YAML-derived active/detached status and UTC times,
   and `service export` with versioned Archive v1 JSON, complete persisted daily
   history, DST-aware current-day slots, and atomic no-overwrite file publication.

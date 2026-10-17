@@ -4,11 +4,12 @@
 
 The executable exposes help (`uptime`, `help`, `-h`, `--help`), version
 (`version`, `--version`), `config check [--config PATH]`, `serve [--config PATH]`,
-`service list [--config PATH]`, and `service export <id> [--config PATH] [--output PATH]`.
+`service list [--config PATH]`, `service export <id> [--config PATH] [--output PATH]`,
+and `service remove <id> [--config PATH]`.
 Configuration commands default to `./uptime.yaml` and have `-h`/`--help`.
 There is no global `--config`.
 Bare `config`, unexpected arguments, and unknown commands/options are usage
-errors. Bare `service` shows its help. CLI service removal remains unimplemented.
+errors. Bare `service` shows its help.
 
 Successful output goes to stdout; diagnostics go to stderr. Help, version, and
 valid configuration return 0; usage errors return 2; invalid/unreadable YAML,
@@ -130,7 +131,7 @@ or environment values. Do not implement config stringification or dumps.
 of explicit `endpoints: []`. Omitted or null endpoints remain invalid. All other
 strict/active validation and CWD path rules are unchanged. Help opens no config or
 storage. Options may precede or follow the export ID; `--output` is export-only.
-There is no `--force`, `--yes`, `--online`, or CLI deletion command.
+There is no `--force`, `--yes`, or `--online`.
 
 The list contains only persisted services, sorted lexically by ID, with columns
 `ID`, `STATUS`, `LAST SEEN (UTC)`. Status is lowercase `active` iff the ID is in
@@ -182,6 +183,33 @@ a new file or parent. `Config.MustExist` enforces this at open, avoiding a Stat/
 race; ordinary `Open` and `serve` still initialize new databases. Stop serve before
 bbolt management; Redis may be queried online. Neither command starts HTTP/probes
 or writes source history, and changing YAML never implicitly deletes history.
+
+## Safe Service Removal (P6-B2)
+
+`service remove <id> [--config PATH]` reuses service argument parsing and maintenance
+loading, including explicit `endpoints: []` and CWD paths. Options may precede or
+follow the ID; `--output` is not accepted. Help reads no config or storage.
+
+Before opening storage, reject any ID in the loaded YAML endpoints using the same
+membership rule as list. This also rejects active IDs absent from storage. For a
+detached ID, open the existing selected backend, call ListServices to verify
+existence, invoke P6-A's RemoveService exactly once, then ListServices again to
+confirm the ID is absent at that moment. Unknown IDs fail without deleting anything.
+No implicit export, confirmation prompt, force bypass, retry or restore is added.
+
+Only the selected service and its history are deleted. Existing bbolt file locking,
+Redis database/prefix selection, schema, and deletion algorithms remain unchanged.
+Stop serve before bbolt management. For Redis, update/restart or stop all writers
+using the old ID before removal: YAML membership and read-back are not a distributed
+lock or a cross-client transaction, and concurrent writers can recreate records.
+
+Close storage before printing `service removed` with a newline. Success/help return
+0, usage errors 2, and active/unknown/storage/operation/read-back/Close/output failures
+1. Failed commands emit no success text; safe diagnostics never echo the supplied
+ID or underlying sensitive errors. Operation and Close causes are preserved internally.
+A failure after attempting deletion does not imply data was unchanged or rolled back.
+Removing the final stored service is permitted with explicit empty endpoints; serve
+and config check still require at least one endpoint. Archive v1 is unchanged.
 
 ## Standalone Runtime (P3–P5.5)
 

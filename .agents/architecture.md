@@ -9,8 +9,8 @@ static native TLS and single-user Basic Auth. P5.5 adds loopback defaults, a roo
 redirect, LibreCosta branding, and Uptime v0.2.2.
 P6-A pins upstream PR #2535's merge and adds `OpenServiceStorage` for independent
 queries and explicit deletion, without constructing Fiber or monitoring workers.
-P6-B1 wires only list/export into the CLI and freezes Archive v1; deletion policy
-and CLI removal remain future work.
+P6-B1 wires list/export into the CLI and freezes Archive v1. P6-B2 adds guarded
+removal through the same standalone session, without changing backend algorithms.
 
 ```text
 cmd/uptime
@@ -44,10 +44,10 @@ upstream API in a new abstraction.
 
 | Area | Responsibility | Current status |
 | --- | --- | --- |
-| `cmd/uptime` | Executable entry point, signal context and CLI wiring | Help, version, config check, serve, service list/export |
+| `cmd/uptime` | Executable entry point, signal context and CLI wiring | Help, version, config check, serve, service list/export/remove |
 | `internal/app` | Fiber composition, lifecycle, health, standalone storage sessions | bbolt or Redis, HTTP/HTTPS, optional Basic Auth; internal history access/removal |
 | `internal/config` | Strict YAML, defaults, active environment resolution, validation | Implemented; returns normalized typed config |
-| `internal/service` | Derive active/detached from current YAML IDs | Sorted terminal-safe list |
+| `internal/service` | Derive active/detached from current YAML IDs; guard explicit removal | Sorted terminal-safe list; existence check and one deletion with read-back |
 | `internal/archive` | Backend-independent service archive/export | Archive v1, completed slots, no-replace JSON publication |
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
@@ -106,7 +106,12 @@ upstream API in a new abstraction.
   never from freshness. Export queries one stored service without UI bounds or
   rollup/cleanup, counts completed slots in calendar time, and omits secrets and
   instance data. Close storage before output; publish synced JSON via same-directory
-  temporary file and no-replace hard link. No CLI deletion or overwrite option.
+  temporary file and no-replace hard link. No overwrite option.
+- Removal checks YAML membership before opening storage, then verifies persisted
+  existence, calls P6-A RemoveService once, and reads back before Close and success
+  output. Policy lives in `internal/service`, not public storage. No force bypass,
+  automatic export or retry. Redis writers must be coordinated; read-back is only
+  a current observation and failures after a delete attempt do not imply rollback.
 - Runtime persistence goes through explicit persistence boundaries, with no
   hidden fallback to memory when a backend fails.
 - Fiber hooks own Uptime lifecycle. OnListen sets readiness; a shared once-only

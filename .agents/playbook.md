@@ -122,6 +122,9 @@ backends. Archive/CLI tests cover UTC/DST, full history, failure cleanup and
 no-replace publication. Verify file publication on Windows and Linux; report a
 platform's unavailable symlink or hard-link support accurately. No extra Redis job
 or container test dependency is needed.
+P6-B2 adds CLI checks for refusal before storage open, detached/last-service removal,
+unknown IDs, offline locks, and failure/Close ordering. The same Redis group also
+verifies guarded removal and preservation of other prefixes and services.
 
 P5 tests generate a CA and SAN certificate in Go and use clients that trust that
 CA. Never bypass verification with InsecureSkipVerify. Cover all four HTTP/HTTPS

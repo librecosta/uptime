@@ -1,4 +1,4 @@
-// Package service derives service configuration status without modifying history.
+// Package service derives configuration status and guards explicit service removal.
 package service
 
 import (
@@ -17,10 +17,7 @@ import (
 // List formats only persisted services, sorted by ID. Active means present in
 // the current configuration, not online; detached does not imply no writers.
 func List(services []uptimestorage.Service, activeIDs []string) string {
-	active := make(map[string]bool, len(activeIDs))
-	for _, id := range activeIDs {
-		active[id] = true
-	}
+	active := activeSet(activeIDs)
 	rows := slices.Clone(services)
 	slices.SortFunc(rows, func(a, b uptimestorage.Service) int { return strings.Compare(a.ID, b.ID) })
 	var output strings.Builder
@@ -42,4 +39,12 @@ func List(services []uptimestorage.Service, activeIDs []string) string {
 	}
 	_ = w.Flush() // strings.Builder writes cannot fail.
 	return output.String()
+}
+
+func activeSet(ids []string) map[string]bool {
+	active := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		active[id] = true
+	}
+	return active
 }

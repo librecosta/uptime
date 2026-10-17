@@ -29,14 +29,20 @@ func TestServiceHelpAndArguments(t *testing.T) {
 		{"service", "list", "--help"}, {"service", "export", "-h"},
 		{"service", "export", "web", "--config", "missing.yaml", "--help"},
 		{"service", "list", "--config", "missing.yaml", "-h"},
+		{"service", "remove", "--help"},
+		{"service", "remove", "web", "--config", "missing.yaml", "-h"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := run(context.Background(), args, &stdout, &stderr); code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String(), "service remove") {
+		if code := run(context.Background(), args, &stdout, &stderr); code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Usage:") {
 			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, &stdout, &stderr)
 		}
 	}
 	for _, args := range [][]string{
-		{"service", "remove", "web"}, {"service", "unknown-SECRET"}, {"service", "list", "web"},
+		{"service", "remove"}, {"service", "unknown-SECRET"}, {"service", "list", "web"},
+		{"service", "remove", "web", "extra"}, {"service", "remove", ""},
+		{"service", "remove", "web", "--output", "SECRET"},
+		{"service", "remove", "web", "--force"}, {"service", "remove", "web", "--yes"},
+		{"service", "remove", "web", "--online"}, {"service", "remove", "web", "--config"},
 		{"service", "export"}, {"service", "export", "web", "extra"}, {"service", "export", ""},
 		{"service", "list", "--config"}, {"service", "export", "web", "--output"},
 		{"service", "list", "--output", "SECRET"}, {"service", "export", "web", "--output="},
@@ -249,6 +255,9 @@ func (s *failedServiceSession) QueryTodaySamples(context.Context, uptimestorage.
 	return nil, s.queryErr
 }
 func (s *failedServiceSession) Close() error { s.closes++; return s.closeErr }
+func (s *failedServiceSession) RemoveService(context.Context, string) error {
+	return errors.New("unexpected removal during list/export")
+}
 
 func TestServiceClosesBeforeOutputAndPreservesErrors(t *testing.T) {
 	dir := t.TempDir()
@@ -269,11 +278,11 @@ func TestServiceClosesBeforeOutputAndPreservesErrors(t *testing.T) {
 		t.Fatal("published despite Close failure")
 	}
 	session := &failedServiceSession{queryErr: cause, closeErr: closeCause}
-	_, _, err := readService(context.Background(), session, serviceArgs{command: "list"}, config.Config{}, time.Now())
+	_, _, err := operateService(context.Background(), session, serviceArgs{command: "list"}, config.Config{}, time.Now())
 	if !errors.Is(err, cause) || !errors.Is(err, closeCause) || session.closes != 1 {
 		t.Fatal("operation/close error chain lost")
 	}
-	for _, args := range [][]string{{"service", "--help"}, {"service", "list", "-h"}, {"service", "export", "-h"}} {
+	for _, args := range [][]string{{"service", "--help"}, {"service", "list", "-h"}, {"service", "export", "-h"}, {"service", "remove", "-h"}} {
 		if code := run(context.Background(), args, failingWriter{}, io.Discard); code != 1 {
 			t.Fatal("help write failure ignored")
 		}

@@ -16,10 +16,12 @@ import (
 const serviceHelp = `Usage:
   uptime service list [--config PATH]
   uptime service export <id> [--config PATH] [--output PATH]
+  uptime service remove <id> [--config PATH]
 
-List persisted services or export their history as Archive v1 JSON.
+List or export history, or permanently remove a detached service.
 bbolt requires an existing database and offline access (stop serve first).
 Redis queries can run online but do not provide a snapshot across calls.
+Before removal, update or stop every monitor writing the old ID.
 
 Options:
   -h, --help      Show this help
@@ -53,8 +55,20 @@ type serviceArgs struct {
 	help                                bool
 }
 
+const removeHelp = `Usage:
+  uptime service remove <id> [--config PATH]
+
+Permanently remove a stored service and its history only when absent from YAML endpoints.
+Stop serve before bbolt maintenance. For shared Redis, update or stop all monitors
+writing the old ID first; other writers can recreate records. No automatic export.
+
+Options:
+  --config PATH   Configuration file (default "./uptime.yaml")
+  -h, --help      Show this help
+`
+
 // Explicitly recognize the two value flags so they work on either side of the
-// export ID. Values and unknown arguments are never quoted in diagnostics.
+// service ID. Values and unknown arguments are never quoted in diagnostics.
 func parseServiceArgs(args []string) (serviceArgs, bool) {
 	result := serviceArgs{configPath: "./uptime.yaml"}
 	if len(args) == 0 || len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
@@ -62,7 +76,7 @@ func parseServiceArgs(args []string) (serviceArgs, bool) {
 		return result, true
 	}
 	result.command = args[0]
-	if result.command != "list" && result.command != "export" {
+	if result.command != "list" && result.command != "export" && result.command != "remove" {
 		return result, false
 	}
 	var ids []string
@@ -96,7 +110,7 @@ func parseServiceArgs(args []string) (serviceArgs, bool) {
 		}
 		ids = append(ids, arg)
 	}
-	if result.command == "list" && len(ids) != 0 || result.command == "export" && (len(ids) > 1 || len(ids) == 0 && !result.help) {
+	if result.command == "list" && len(ids) != 0 || result.command != "list" && (len(ids) > 1 || len(ids) == 0 && !result.help) {
 		return result, false
 	}
 	if len(ids) == 1 {
@@ -107,6 +121,7 @@ func parseServiceArgs(args []string) (serviceArgs, bool) {
 
 type serviceSession interface {
 	archive.Reader
+	RemoveService(context.Context, string) error
 	Close() error
 }
 
@@ -127,6 +142,8 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer, op
 			text = listHelp
 		} else if options.command == "export" {
 			text = exportHelp
+		} else if options.command == "remove" {
+			text = removeHelp
 		}
 		if _, err := io.WriteString(stdout, text); err != nil {
 			return diagnostic(stderr, "service: cannot write output", 1)
@@ -137,6 +154,11 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer, op
 	if err != nil {
 		return diagnostic(stderr, "service: "+err.Error(), 1)
 	}
+	if options.command == "remove" {
+		if err := service.CheckDetached(options.id, configuredServiceIDs(cfg)); err != nil {
+			return diagnostic(stderr, "service: "+err.Error(), 1)
+		}
+	}
 	session, err := open(ctx, cfg)
 	if err != nil {
 		// OpenServiceStorage returns safe diagnostics, including the offline lock
@@ -144,10 +166,13 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer, op
 		return diagnostic(stderr, "service: "+err.Error(), 1)
 	}
 	now := time.Now()
-	output, document, err := readService(ctx, session, options, cfg, now)
+	output, document, err := operateService(ctx, session, options, cfg, now)
 	if err != nil {
-		if errors.Is(err, archive.ErrServiceNotFound) {
+		if errors.Is(err, archive.ErrServiceNotFound) || errors.Is(err, service.ErrNotFound) {
 			return diagnostic(stderr, "service: service not found", 1)
+		}
+		if options.command == "remove" {
+			return diagnostic(stderr, "service: cannot complete removal or close storage; deletion may already have occurred", 1)
 		}
 		return diagnostic(stderr, "service: cannot read history or close storage", 1)
 	}
@@ -170,9 +195,12 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer, op
 	return 0
 }
 
-// Finish queries and close storage before emitting output or publishing a file.
-func readService(ctx context.Context, session serviceSession, options serviceArgs, cfg config.Config, now time.Time) (output string, document archive.Archive, result error) {
+// Finish the operation and close storage before emitting output or publishing a file.
+func operateService(ctx context.Context, session serviceSession, options serviceArgs, cfg config.Config, now time.Time) (output string, document archive.Archive, result error) {
 	defer func() { result = errors.Join(result, session.Close()) }()
+	if options.command == "remove" {
+		return "service removed\n", archive.Archive{}, service.Remove(ctx, session, options.id)
+	}
 	if options.command == "export" {
 		document, result = archive.Build(ctx, session, archive.Options{ID: options.id,
 			ApplicationVersion: version, Now: now, Timezone: cfg.Uptime.Timezone, Interval: cfg.Uptime.Interval})
@@ -182,9 +210,13 @@ func readService(ctx context.Context, session serviceSession, options serviceArg
 	if err != nil {
 		return "", archive.Archive{}, err
 	}
+	return service.List(rows, configuredServiceIDs(cfg)), archive.Archive{}, ctx.Err()
+}
+
+func configuredServiceIDs(cfg config.Config) []string {
 	activeIDs := make([]string, 0, len(cfg.Endpoints))
 	for _, endpoint := range cfg.Endpoints {
 		activeIDs = append(activeIDs, endpoint.ID)
 	}
-	return service.List(rows, activeIDs), archive.Archive{}, ctx.Err()
+	return activeIDs
 }

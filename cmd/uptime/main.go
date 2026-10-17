@@ -33,6 +33,7 @@ Commands:
   serve         Run the uptime service
   service list  List persisted services and their configuration status
   service export <id>  Export service history as Archive v1 JSON
+  service remove <id>  Permanently remove a detached service and its history
 
 Options:
   -h, --help    Show this help

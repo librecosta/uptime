@@ -19,6 +19,7 @@ import (
 	"github.com/gofiber/contrib/v3/uptime"
 	fiberredis "github.com/gofiber/storage/redis/v3"
 	"github.com/librecosta/uptime/internal/config"
+	"github.com/librecosta/uptime/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -65,14 +66,33 @@ func TestRedisIntegrationServiceStorage(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatal("query crossed configured Redis prefixes")
 	}
-	must(t, session.RemoveService(ctx, "history"))
+	seedServiceHistory(t, other.store, "history", 1)
+	must(t, service.CheckDetached("history", []string{cfg.Endpoints[0].ID}))
+	must(t, service.Remove(ctx, session, "history"))
 	assertServiceHistory(t, session, "history", false)
 	assertServiceHistory(t, session, "keep", true)
+	assertServiceHistory(t, other, "history", true)
+	if err := service.Remove(ctx, session, "missing"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("unknown service removal: %v", err)
+	}
 	rows, err = session.ListServices(ctx)
 	must(t, err)
 	if len(rows) != 2 || requests.Load() != 0 {
 		t.Fatal("standalone access started monitoring")
 	}
+	// An explicitly empty endpoint set permits retiring the remaining services.
+	for _, id := range []string{"keep", "session"} {
+		must(t, service.CheckDetached(id, []string{}))
+		must(t, service.Remove(ctx, session, id))
+		assertServiceHistory(t, session, id, false)
+	}
+	rows, err = session.ListServices(ctx)
+	must(t, err)
+	if len(rows) != 0 {
+		t.Fatal("last service remains after removal")
+	}
+	assertServiceHistory(t, other, "history", true)
+	t.Log("guarded removal: target history removed, unknown ID rejected, other prefix preserved, last service retired")
 	must(t, session.Close())
 	must(t, session.Close())
 	assertRedisClosed(t, session.resources)

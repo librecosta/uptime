@@ -11,7 +11,7 @@ P5.5 adds loopback defaults, a configured root redirect, LibreCosta branding, an
 Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 P6-A adds internal standalone history access and explicit removal using the
 merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
-CLI removal and its policy remain unimplemented.
+P6-B2 adds guarded removal of persisted services absent from the current YAML.
 
 ## Start Here
 
@@ -26,7 +26,7 @@ CLI removal and its policy remain unimplemented.
 - `cmd/uptime`: executable entry point, minimal CLI, behavioral tests.
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
 - `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
-- `internal/service`, `internal/archive`: list status and read-only Archive v1 export.
+- `internal/service`, `internal/archive`: list/removal policy and read-only Archive v1 export.
 - `configs`: official example that validates without external services or secrets.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
 - `.agents`: architectural boundaries and change workflow.
@@ -68,6 +68,9 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Service commands use `config.LoadServiceFile`: only explicit `endpoints: []`
   relaxes normal validation. bbolt maintenance must open an existing database;
   runtime creation stays unchanged. Derive active/detached solely from YAML IDs.
+- Before opening storage for removal, reject YAML-active IDs. Require a persisted
+  detached ID, invoke the session's RemoveService once, then read back and Close
+  before success output. No force, automatic export or retry; coordinate Redis writers.
 - Archive v1 reads the public Store contract, preserves real daily rows and raw
   sample counts, and uses calendar/DST-aware completed slots. Publish complete
   JSON with no overwrite; no raw config, credentials or instance metadata.

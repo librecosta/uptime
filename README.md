@@ -33,7 +33,7 @@ API, a reusable public bbolt backend, optional Redis persistence, optional TLS
 and Basic Auth, health endpoints, and explicit service history export/removal.
 The public bbolt backend, configuration validation, HTTP runtime, built-in status
 page/API, health endpoints, Redis, TLS, and Basic Auth are implemented.
-Service listing and Archive v1 export are implemented; CLI removal remains future work. See the
+Service listing, Archive v1 export, and guarded service removal are implemented. See the
 [product/technical design](docs/design/v0.1.0-product-technical-design.md) for
 the intended behavior and boundaries.
 
@@ -60,7 +60,8 @@ service removal, using upstream PR #2535's merged Redis Store API. The dependenc
 is temporarily pinned to commit `e811012f822675810017efdf00823849f97f2323` via a
 Go pseudo-version; see the [upstream contract](contracts/upstream.md).
 P6-B1 adds `service list` and `service export` using that query boundary, with
-maintenance configuration and safe Archive v1 JSON output. CLI deletion remains unimplemented.
+maintenance configuration and safe Archive v1 JSON output. P6-B2 adds explicit
+removal of persisted services absent from the current YAML endpoint set.
 
 ## Validate Configuration
 
@@ -247,8 +248,32 @@ must exist and support hard links: a complete, synced temporary file is publishe
 atomically, or the operation fails safely. New files use mode 0600 where supported;
 Windows access follows the directory's ACL. See the [Archive v1 contract](contracts/compatibility.md#service-list-and-archive-v1-p6-b1)
 for the stable fields and time rules. Help uses no configuration or storage;
-success returns 0, usage errors 2, and operational failures 1. There is no CLI
-removal command or overwrite option in this phase.
+success returns 0, usage errors 2, and operational failures 1. There is no overwrite option.
+
+## Remove a Retired Service
+
+First remove the ID from YAML and stop or restart every monitor still using the
+old configuration. Then run:
+
+```sh
+uptime service remove api-v1 --config ./uptime.yaml
+```
+
+This permanently deletes the stored service and its history. An ID still in the
+loaded YAML is refused before storage is opened; an unknown stored ID is an error.
+The command defaults to `./uptime.yaml`, uses the same maintenance validation as
+list/export, and accepts explicit `endpoints: []` to remove the final retired service.
+There is no `--force`, confirmation prompt, automatic export, or Archive import.
+
+bbolt requires stopping `serve` and exclusive access to the existing database.
+Redis removal uses only the configured database and key prefix. Detached status
+does not exclude other writers: they may recreate records even after a successful
+read-back. Coordinate all writers before removing shared Redis data.
+
+Success prints `service removed` only after read-back and storage Close succeed.
+Failures return 1 without success output and never retry deletion automatically.
+A deletion attempt may already have changed data even if the operation, read-back,
+Close, or output subsequently fails; a failure is not a rollback guarantee.
 
 ## Public bbolt Package
 
@@ -269,7 +294,8 @@ for schema, cancellation limitations, and cold-backup guidance.
 `storage/bbolt` is independently reusable and imports no project `internal/*`
 package. `internal/app.New` checks capabilities without I/O; its single-use `Run`
 owns listener, Fiber/Uptime, and storage lifetime. `internal/service` derives list
-status and `internal/archive` builds and safely publishes Archive v1 from Store queries.
+status and guards explicit removal; `internal/archive` builds and safely publishes
+Archive v1 from Store queries.
 `internal/app.OpenServiceStorage` separately opens bbolt or Redis for history
 queries, explicit removal, and Close, without HTTP or monitoring workers. bbolt
 requires offline access; Redis deletion must be coordinated with active writers.
