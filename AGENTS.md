@@ -12,6 +12,8 @@ Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 P6-A adds internal standalone history access and explicit removal using the
 merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
 P6-B2 adds guarded removal of persisted services absent from the current YAML.
+P7-A adds standard-library five-platform packaging and manual Actions previews;
+deployment packaging and official releases remain later work.
 
 ## Start Here
 
@@ -28,12 +30,14 @@ P6-B2 adds guarded removal of persisted services absent from the current YAML.
 - `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
 - `internal/service`, `internal/archive`: list/removal policy and read-only Archive v1 export.
 - `configs`: official example that validates without external services or secrets.
+- `tools/dist`: cross-platform build, allowlisted archives, and checksum verification.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
 - `.agents`: architectural boundaries and change workflow.
 - `contracts`: compatibility, persistence, and upstream constraints.
 - `docs/design`: planned v0.1.0 baseline and bbolt design rationale.
 - `docs/decisions`: significant decisions after the baseline.
 - `Makefile`, `.github/workflows/ci.yml`: local verification and CI.
+- `.github/workflows/distribution.yml`: manual preview artifacts only.
 
 ## Sources of Truth
 
@@ -85,6 +89,9 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Preserve MIT `LICENSE`; use [LibreCosta organization community files](https://github.com/librecosta/.github) rather than
   adding local Code of Conduct, Contributing, or Security copies.
 - Do not create empty future packages or advertise unimplemented CLI commands.
+- Distribution builds use the fixed module graph, explicit version/full SHA and
+  CGO-free targets. Stage and verify all archives before publishing an output
+  directory; refuse existing nonempty output and never package local config/data.
 
 ## Verification
 

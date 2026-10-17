@@ -29,6 +29,36 @@ follows the active Fiber major version's supported window; CI covers 1.26.x and
 1.27.x. Updating that window requires coordinated module, CI, and documentation
 changes.
 
+## Distribution Preview (P7-A)
+
+`tools/dist` is a repository build helper, not a product CLI command. It builds
+Linux amd64/arm64, Darwin amd64/arm64 and Windows amd64 using the pinned module
+graph and CGO_ENABLED=0. Explicit version and full 40-digit hexadecimal Git SHA
+are required for building; normal source runs retain `dev` / `unknown`.
+Versions are 1..64 ASCII letters/digits/dot/underscore/hyphen, beginning with a
+letter/digit, excluding `..` and `unknown`. No shell interpolation is used.
+
+Archives are `librecosta-uptime_<version>_<GOOS>_<GOARCH>.tar.gz` (Unix) or `.zip`
+(Windows). Each has exactly four flat regular files in order: `uptime` or
+`uptime.exe` (0755), `uptime.example.yaml`, `README.md`, `LICENSE` (0644).
+The latter three are copied verbatim from their official repository sources;
+symlink sources are refused. Never package user configuration, secrets or data.
+`SHA256SUMS` contains exactly the five archive hashes in lexical filename order,
+using lowercase SHA-256, two spaces, filename and newline. No self-checksum.
+
+Build/package/checksum validation finishes in a temporary sibling directory before
+final publication. Refuse existing nonempty output, files and symlinks. Failures
+must not leave a partial final distribution; cleanup is limited to owned staging.
+The parent directory must exist. Reproducible target/content contracts do not
+promise identical bytes across Go versions or machines. `--verify` checks the full
+set, member permissions and binary architecture without executing downloaded code;
+native version/help/config smoke is a separate acceptance step.
+
+The preview workflow uses Go 1.26.x and only Actions Artifacts, with read-only
+repository permissions. No Tag, Release or deployment publication is implied.
+Unpacking never creates configuration; process-CWD paths and loopback defaults
+remain unchanged. Make's existing build/check semantics remain unchanged.
+
 ## YAML Configuration (P2)
 
 The [official example](../configs/uptime.example.yaml) shows the supported keys.

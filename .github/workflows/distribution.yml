@@ -1,0 +1,43 @@
+name: Distribution preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PREVIEW_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+      - name: Build and verify all five archives
+        run: go run ./tools/dist --version dev --commit "$PREVIEW_COMMIT" --output dist
+      - name: Verify checksums and smoke test Linux amd64
+        shell: bash
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          smoke=$(mktemp -d)
+          trap 'rm -rf "$smoke"' EXIT
+          tar -xzf dist/librecosta-uptime_dev_linux_amd64.tar.gz -C "$smoke"
+          cd "$smoke"
+          version=$(./uptime version)
+          printf '%s\n' "$version"
+          grep -Fx 'LibreCosta Uptime dev' <<< "$version"
+          grep -Fx "Commit: $PREVIEW_COMMIT" <<< "$version"
+          ./uptime --help
+          test "$(./uptime config check --config uptime.example.yaml)" = 'configuration is valid'
+          test ! -e data
+      - uses: actions/upload-artifact@v7
+        with:
+          name: librecosta-uptime-dev-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

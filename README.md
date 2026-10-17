@@ -62,6 +62,65 @@ Go pseudo-version; see the [upstream contract](contracts/upstream.md).
 P6-B1 adds `service list` and `service export` using that query boundary, with
 maintenance configuration and safe Archive v1 JSON output. P6-B2 adds explicit
 removal of persisted services absent from the current YAML endpoint set.
+P7-A adds cross-platform distribution packaging and a manual Actions preview
+workflow. These are development previews, not official releases.
+
+## Build / Distribution Preview
+
+From the repository root with Go 1.26 or a supported newer Go:
+
+```sh
+go run ./tools/dist --version dev --commit "$(git rev-parse HEAD)" --output dist
+```
+
+PowerShell:
+
+```powershell
+$sha = git rev-parse HEAD
+go run ./tools/dist --version dev --commit $sha --output dist
+```
+
+The standard-library tool builds with CGO disabled, injects the supplied version
+and full 40-digit Git SHA, and verifies each archive before publishing `dist/`.
+An existing nonempty output directory is refused. `make build` remains a compile
+check; ordinary `go run ./cmd/uptime version` still reports `dev` / `unknown`.
+
+| Platform | Preview archive |
+| --- | --- |
+| Linux amd64 | `librecosta-uptime_dev_linux_amd64.tar.gz` |
+| Linux arm64 | `librecosta-uptime_dev_linux_arm64.tar.gz` |
+| macOS amd64 | `librecosta-uptime_dev_darwin_amd64.tar.gz` |
+| macOS arm64 | `librecosta-uptime_dev_darwin_arm64.tar.gz` |
+| Windows amd64 | `librecosta-uptime_dev_windows_amd64.zip` |
+
+`SHA256SUMS` covers all five archives in filename order. With Go available, verify
+the complete set on any supported host (this does not execute its binaries):
+
+```sh
+go run ./tools/dist --verify --version dev --output dist
+```
+
+Alternatively, in `dist/`, use `sha256sum --check SHA256SUMS` on Linux or
+`shasum -a 256 --check SHA256SUMS` on macOS. On PowerShell, compare
+`(Get-FileHash ./dist/librecosta-uptime_dev_windows_amd64.zip -Algorithm SHA256).Hash`
+with that archive's entry in `SHA256SUMS`.
+
+Extract the archive for your platform into an empty directory. It contains only
+`uptime` (`uptime.exe` on Windows), `uptime.example.yaml`, `README.md`, and `LICENSE`.
+In that directory, copy `uptime.example.yaml` to `uptime.yaml`, edit your endpoints,
+then run `./uptime version`, `./uptime config check --config ./uptime.yaml`, and
+`./uptime serve --config ./uptime.yaml` (PowerShell: `./uptime.exe`). No Go installation
+is needed to run the binary. Configuration is never generated automatically;
+relative configuration, TLS and `./data/uptime.db` paths use the **process working
+directory**, not the executable's location. The default listener is
+`127.0.0.1:18580`.
+
+The manual [distribution workflow](.github/workflows/distribution.yml) builds with
+Go 1.26.x, checks all targets and runs a Linux amd64 CLI smoke test. It uploads only
+a seven-day Actions Artifact, without a Tag or Release. GitHub normally exposes
+the manual trigger once the workflow reaches the default branch; it does not
+change the `develop` / `pre-master` / `master` promotion process. Docker and
+deployment packaging remain P7-B work.
 
 ## Validate Configuration
 

@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P7-A: standard-library cross-platform builds for Linux/macOS amd64/arm64 and
+  Windows amd64, explicit version/full Git SHA, allowlisted tar.gz/zip packages,
+  SHA256SUMS verification and staged publication without overwriting existing data.
+- Manual Go 1.26.x Actions distribution previews with binary/architecture checks,
+  Linux CLI smoke and seven-day artifacts; no Tag or Release publication.
+
 - P6-B2: `service remove <id>` refuses configured IDs before opening storage,
   requires persisted history, deletes through the standalone session, and reads
   back/closes before success output. Includes last-service retirement, offline

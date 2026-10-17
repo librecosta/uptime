@@ -131,3 +131,41 @@ CA. Never bypass verification with InsecureSkipVerify. Cover all four HTTP/HTTPS
 and public/Auth combinations, UI namespace boundaries, safe constructor rejection,
 and stalled-handshake shutdown with storage closing after worker/connection drain.
 These tests stay in normal checks and the existing runtime race scope.
+
+## Distribution Preview (P7-A)
+
+Run `make check` once, then from the repository root:
+
+```sh
+go run ./tools/dist --version dev --commit "$(git rev-parse HEAD)" --output dist
+```
+
+PowerShell equivalent:
+
+```powershell
+$sha = git rev-parse HEAD
+go run ./tools/dist --version dev --commit $sha --output dist
+```
+
+The output parent must exist; output must be absent or empty. Choose a new output
+path for another build rather than deleting existing files automatically. The tool
+builds only `./cmd/uptime` with readonly modules, CGO disabled, `-trimpath`,
+`-buildvcs=false`, and explicit linker metadata. It verifies five archives,
+checksums, permissions, Go build metadata and ELF/Mach-O/PE architectures before
+renaming its staging directory into place. Temporary workspace cleanup is attempted
+on failures/cancellation; force-killing a process may leave a `.uptime-dist-*`
+directory, never a complete final output. Do not mistake staging files for artifacts.
+
+```sh
+go run ./tools/dist --verify --version dev --output dist
+```
+
+Verification inspects packages without running binaries. Separately extract the
+host archive into a temporary directory, run `version` (match the supplied version
+and full SHA), `--help`, and `config check --config uptime.example.yaml` there.
+Config check must not create `data/`. Go omits linker flags from build metadata
+with `-trimpath`, so native execution is the version-injection acceptance check.
+The preview workflow performs these steps on Linux amd64 with Go 1.26.x and uploads
+only a seven-day Actions Artifact. Report cross-compiled targets separately from
+native executions and remote CI that has not run. No extra race/Redis run is
+required for packaging-only changes; preserve the existing CI jobs.
