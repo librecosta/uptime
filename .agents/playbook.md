@@ -211,6 +211,9 @@ pass. Deployment examples must preserve process-CWD paths and offline bbolt lock
 it has no manual publishing entry point. A read-only job validates stable SemVer
 (`vMAJOR.MINOR.PATCH`, no leading zeroes or suffixes), dereferences the tag, and
 requires equality with freshly fetched `origin/master` HEAD and the event checkout.
+Before building or enabling publishing jobs, it requires a nonempty
+`docs/releases/<version>.md` in that commit. Every version must provide reviewed
+release notes there; Release creation reads this file instead of generating notes.
 It builds with Go 1.26.x using `tools/dist`, runs `--verify`, checks SHA256SUMS,
 and smoke-tests the Linux amd64 binary. It rechecks refs before enabling writers.
 

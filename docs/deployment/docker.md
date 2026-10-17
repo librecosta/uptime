@@ -1,31 +1,30 @@
 # Docker deployment
 
-P7-B provides local preview images only. GHCR images and a `v0.1.0` release are
-not published yet. Use Linux containers on an amd64 or arm64 Docker host.
+Use Linux containers on an amd64 or arm64 Docker host. The versioned GHCR image
+selects the matching architecture automatically.
 
-## Build a preview
-
-From the repository root with Docker Buildx:
+## Get the image
 
 ```sh
-docker buildx build --platform linux/amd64 --load \
-  --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" \
-  --tag librecosta-uptime:dev-amd64 .
+docker pull ghcr.io/librecosta/uptime:v0.1.0
 ```
 
-For arm64, replace both `amd64` occurrences with `arm64`. The Go 1.26 builder
-runs on the build host and cross-compiles; no QEMU is needed. These arguments
-inject the same `main.version` / `main.commit` as P7-A. A full 40-digit SHA is
-required. The final image uses maintained Distroless static Debian 13 `nonroot`,
-with system CA certificates, UID/GID `65532:65532`, embedded Go timezone data,
+Use an explicit version tag for controlled upgrades. The image uses Distroless
+static Debian 13 `nonroot`, with system CA certificates, UID/GID `65532:65532`, embedded Go timezone data,
 and no shell or Go toolchain. Only the binary, MIT license and owned `/data`
 directory are added. There is no automatic configuration generation or HEALTHCHECK.
 
 ## Configure and run
 
-On Linux, prepare a deployment directory and copy
-[`deploy/docker/uptime.example.yaml`](../../deploy/docker/uptime.example.yaml)
-to `uptime.yaml`. Edit the endpoints before starting. Keep `server.address:
+For a new installation on Linux, prepare an empty deployment directory and download
+the [container example](../../deploy/docker/uptime.example.yaml):
+
+```sh
+curl --fail --location --output uptime.yaml \
+  https://raw.githubusercontent.com/librecosta/uptime/v0.1.0/deploy/docker/uptime.example.yaml
+```
+
+Edit the endpoints before starting. Keep `server.address:
 ":18580"` and `storage.bbolt.path: /data/uptime.db`: container loopback cannot
 receive published-port traffic, and the ordinary `./data/uptime.db` default is
 relative to the process working directory (`/data` in this image).
@@ -35,7 +34,7 @@ on Linux, use `sudo chown root:65532 uptime.yaml` and `sudo chmod 0640 uptime.ya
 Do not mount TLS keys or configuration from a location the service cannot read.
 
 ```sh
-IMAGE=librecosta-uptime:dev-amd64 # use dev-arm64 on an arm64 host
+IMAGE=ghcr.io/librecosta/uptime:v0.1.0
 docker run --rm "$IMAGE" version
 docker run --rm \
   --mount "type=bind,src=$(pwd)/uptime.yaml,dst=/etc/uptime/uptime.yaml,readonly" \
@@ -59,10 +58,11 @@ absolute path at `/data`. Existing data must also have compatible ownership.
 The image does not run root startup scripts, change host ownership, or use mode 777.
 
 PowerShell uses the same Docker flags, on one line or with backtick continuations.
+Download the same example YAML and set `$IMAGE = 'ghcr.io/librecosta/uptime:v0.1.0'`.
 Resolve the source first with `$configPath = (Resolve-Path ./uptime.yaml).Path`,
 then pass `--mount "type=bind,src=$configPath,dst=/etc/uptime/uptime.yaml,readonly"`.
-Use `$sha = git rev-parse HEAD` for the build argument. Docker Desktop must have
-access to that Windows path; Linux ownership commands above apply to Linux hosts.
+Docker Desktop must have access to that Windows path; Linux ownership commands
+above apply to Linux hosts.
 
 ## Health and exposure
 
@@ -118,10 +118,27 @@ and copied out afterward. Removal retains the existing detached-only safeguards.
 For Redis, reads may run online but are not a cross-call snapshot; coordinate all
 writers before removing a service. Redis backup belongs to the Redis operator.
 
-To upgrade, build/select the new image and verify its version. Stop, back up, then
+To upgrade, pull the chosen version from GHCR and verify its version with
+`docker run --rm <image> version`. Stop, back up, then
 `docker rm librecosta-uptime` and repeat the run command with the **same named
 volume and configuration** and the new image. Recreate the container after editing
 bind-mounted configuration too, so atomically replaced files are remounted; there
 is no hot reload. Never copy a live bbolt file or run
 two serving containers against it. No automatic migration, backup or update is
 performed; retain the prior binary/image and offline backup until verification.
+
+## Optional: build from source
+
+For development, run from the repository root with Docker Buildx:
+
+```sh
+docker buildx build --platform linux/amd64 --load \
+  --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" \
+  --tag librecosta-uptime:dev-amd64 .
+```
+
+For arm64, replace both `amd64` occurrences with `arm64`. The Go 1.26 builder
+cross-compiles on the build host without QEMU, using the same version/commit
+injection as binary distributions. A full 40-digit SHA is required. Select this
+local image in `IMAGE` when following the run examples. In PowerShell, assign
+`$sha = git rev-parse HEAD` and use `--build-arg "COMMIT=$sha"`.

@@ -49,6 +49,13 @@ jobs:
             exit 1
           fi
           printf 'version=%s\ncommit=%s\n' "$VERSION" "$commit" >> "$GITHUB_OUTPUT"
+      - name: Require reviewed release notes
+        run: |
+          notes="docs/releases/${VERSION}.md"
+          if [[ ! -f "$notes" || ! -s "$notes" ]]; then
+            echo "::error::Missing or empty release notes: $notes"
+            exit 1
+          fi
       - name: Refuse an existing release, including drafts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -197,7 +204,7 @@ jobs:
           # An explicit draft keeps partial uploads for review if creation fails.
           # Publish only after all six assets have uploaded; never replace assets.
           gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --draft --title "LibreCosta Uptime $VERSION" --generate-notes \
+            --draft --title "LibreCosta Uptime $VERSION" --notes-file "docs/releases/${VERSION}.md" \
             "dist/librecosta-uptime_${VERSION}_darwin_amd64.tar.gz" \
             "dist/librecosta-uptime_${VERSION}_darwin_arm64.tar.gz" \
             "dist/librecosta-uptime_${VERSION}_linux_amd64.tar.gz" \

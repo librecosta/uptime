@@ -1,9 +1,29 @@
 # systemd deployment
 
 This example targets Linux system services (commands below suit Debian/Ubuntu).
-Obtain the matching Linux binary from a locally generated P7-A archive and verify
-its SHA256SUMS first; no official release is implied. Keep the repository's
-`configs/uptime.example.yaml` and `deploy/systemd/uptime.service` available.
+Download the matching Linux archive and `SHA256SUMS` from
+[GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.1.0).
+Use `amd64` for Intel/AMD x64 or `arm64` for ARM64 Linux.
+
+## Download and verify
+
+From a new download directory, use the architecture matching your server:
+
+```sh
+VERSION=v0.1.0
+ARCH=amd64 # Use arm64 on ARM64 Linux.
+ARCHIVE="librecosta-uptime_${VERSION}_linux_${ARCH}.tar.gz"
+BASE="https://github.com/librecosta/uptime/releases/download/$VERSION"
+curl --fail --location --remote-name "$BASE/$ARCHIVE"
+curl --fail --location --remote-name "$BASE/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS && tar -xzf "$ARCHIVE"
+curl --fail --location --output uptime.service \
+  "https://raw.githubusercontent.com/librecosta/uptime/$VERSION/deploy/systemd/uptime.service"
+```
+
+Continue only after the archive checksum passes and all downloads succeed. The
+archive contains `uptime` and `uptime.example.yaml`; the systemd unit is downloaded
+separately from the same version. Review the unit before installing it.
 
 ## Install and configure
 
@@ -15,9 +35,9 @@ sudo useradd --system --user-group --no-create-home \
 sudo install -m 0755 ./uptime /usr/local/bin/uptime
 sudo install -d -m 0750 -o root -g librecosta-uptime /etc/librecosta-uptime
 sudo install -m 0640 -o root -g librecosta-uptime \
-  configs/uptime.example.yaml /etc/librecosta-uptime/uptime.yaml
+  uptime.example.yaml /etc/librecosta-uptime/uptime.yaml
 sudoedit /etc/librecosta-uptime/uptime.yaml
-sudo install -m 0644 deploy/systemd/uptime.service /etc/systemd/system/librecosta-uptime.service
+sudo install -m 0644 uptime.service /etc/systemd/system/librecosta-uptime.service
 ```
 
 These are first-install steps; preserve existing configuration during upgrades.
@@ -76,7 +96,8 @@ CLI safeguards. Export destinations need service-account write access. An export
 is not a database backup; there is no archive import. Shared Redis still requires
 coordination with other writers before deletion and has no cross-query snapshot.
 
-While stopped, replace the binary with a verified new Linux binary using
+Download and verify the new release for the same architecture before upgrading.
+While stopped, replace the binary with the verified new Linux binary using
 `sudo install -m 0755 /path/to/new/uptime /usr/local/bin/uptime`, preserving the
 configuration and state directory. Then:
 
