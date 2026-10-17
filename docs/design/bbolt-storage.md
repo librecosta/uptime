@@ -21,7 +21,7 @@ The `github.com/librecosta/uptime/storage/bbolt` package is public so a
 third-party Fiber application can reuse it without running the standalone
 product. It implements Fiber Contrib Uptime's exported `uptime/storage.Store`
 contract and never imports this repository's `internal/*` packages. A compile-time
-assertion checks Fiber Contrib Uptime v0.2.2's public interface. The only other
+assertion checks the pinned Fiber Contrib Uptime public interface. The only other
 direct dependency is bbolt v1.5.0.
 
 The old Redis-emulation approach mentioned by the product baseline is rejected:

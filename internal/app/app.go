@@ -16,6 +16,7 @@ import (
 type runtimeStore interface {
 	uptimestorage.Store
 	Ping(context.Context) error
+	RemoveService(context.Context, string) error
 	Close() error
 }
 

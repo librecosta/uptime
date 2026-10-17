@@ -7,6 +7,8 @@ endpoint probing, built-in dashboard/API, health, and shutdown. The diagram show
 the implemented composition. P4 adds optional upstream Redis persistence; P5 adds
 static native TLS and single-user Basic Auth. P5.5 adds loopback defaults, a root
 redirect, LibreCosta branding, and Uptime v0.2.2. Archive remains future work.
+P6-A pins upstream PR #2535's merge and adds `OpenServiceStorage` for independent
+queries and explicit deletion, without constructing Fiber or monitoring workers.
 
 ```text
 cmd/uptime
@@ -41,7 +43,7 @@ upstream API in a new abstraction.
 | Area | Responsibility | Current status |
 | --- | --- | --- |
 | `cmd/uptime` | Executable entry point, signal context and CLI wiring | Help, version, config check, serve |
-| `internal/app` | Fiber composition, lifecycle, health endpoints | bbolt or Redis, HTTP/HTTPS, optional Basic Auth |
+| `internal/app` | Fiber composition, lifecycle, health, standalone storage sessions | bbolt or Redis, HTTP/HTTPS, optional Basic Auth; internal history access/removal |
 | `internal/config` | Strict YAML, defaults, active environment resolution, validation | Implemented; returns normalized typed config |
 | `internal/archive` | Backend-independent service archive/export | Planned |
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
@@ -83,6 +85,14 @@ upstream API in a new abstraction.
   bbolt uses `Config.Storage`; Redis uses `Config.Store` and `StorageKeyPrefix`.
   They are mutually exclusive. The app owns the go-redis client with context
   timeouts enabled; Fiber Storage borrows it. Keep Uptime's second Init/Ping.
+- `OpenServiceStorage` reuses `openStorage` and its once-only resource cleanup.
+  Its three query methods use upstream Store types and safe errors. Redis opens
+  through public `uptime.NewRedisStore` with the configured prefix/retention and
+  a five-second initialization context; deletion uses `uptime.RemoveService`.
+  bbolt uses its existing Store and exclusive file lock. Initialization failures
+  release acquired resources. Callers stop operations before closing a session.
+  No listener, probe, maintenance task, active/detached policy, or CLI is added;
+  `serve` keeps its existing storage mapping and lifetime.
 - Mapping into Uptime is pure and explicit, cloning headers/status codes. Do not
   set self-service metadata or reparse/default the normalized configuration.
 - Archive logic does not depend on raw bbolt buckets. CLI maintenance commands

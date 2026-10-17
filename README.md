@@ -40,7 +40,7 @@ the intended behavior and boundaries.
 ## Current Development Status
 
 P1 adds `github.com/librecosta/uptime/storage/bbolt`, directly implementing Fiber
-Contrib Uptime v0.2.2's public `storage.Store` contract using bbolt v1.5.0. It
+Contrib Uptime's public `storage.Store` contract using bbolt v1.5.0. It
 provides schema-versioned persistence, atomic service-level heartbeat deduplication,
 rollup, queries, cleanup, explicit service removal, and contract tests.
 
@@ -48,13 +48,18 @@ P2 adds normalized configuration and `config check`. No-argument invocation show
 help; help/version remain available. Unknown commands or unexpected arguments
 return usage errors. Configuration uses stable YAML v3 with no CLI/config framework.
 
-P3 adds `serve`, composing Fiber v3.5.0 and Fiber Uptime v0.2.2 with the public
+P3 adds `serve`, composing Fiber v3 and Fiber Uptime with the public
 bbolt Store. The runtime monitors only configured endpoints, with no self service.
 P4 adds optional Redis persistence through Fiber Storage Redis and Uptime's native
 Redis backend, retaining bbolt as the zero-infrastructure default.
 P5 adds native static TLS and Fiber BasicAuth for the dashboard/API namespace.
 P5.5 completes LibreCosta branding, defaults to loopback access, redirects the
 root to the configured dashboard, and upgrades Fiber Uptime to v0.2.2.
+P6-A adds internal standalone storage access for history queries and explicit
+service removal, using upstream PR #2535's merged Redis Store API. The dependency
+is temporarily pinned to commit `e811012f822675810017efdf00823849f97f2323` via a
+Go pseudo-version; see the [upstream contract](contracts/upstream.md).
+Service CLI commands, Archive, and deletion policy remain future work.
 
 ## Validate Configuration
 
@@ -190,6 +195,8 @@ parameters are allowed. Config check parses offline and never connects. `rediss:
 secures the Redis connection independently of native server TLS. The prefix must
 be non-empty, without leading/trailing colon or whitespace or any control character;
 internal colons such as `prod:asia:uptime` are supported. Rules apply after env expansion.
+Redis `uptime.retention` must not exceed `106750d` so its expiry backstop cannot
+overflow; config check enforces this offline. This limit does not apply to bbolt.
 
 Startup Pings Redis with a five-second timeout before binding HTTP. A canceled
 startup context cleans up normally; connection failure is fatal with a safe error.
@@ -221,6 +228,9 @@ for schema, cancellation limitations, and cold-backup guidance.
 `storage/bbolt` is independently reusable and imports no project `internal/*`
 package. `internal/app.New` checks capabilities without I/O; its single-use `Run`
 owns listener, Fiber/Uptime, and storage lifetime. Archive work remains unimplemented.
+`internal/app.OpenServiceStorage` separately opens bbolt or Redis for history
+queries, explicit removal, and Close, without HTTP or monitoring workers. bbolt
+requires offline access; Redis deletion must be coordinated with active writers.
 See the [architecture guide](.agents/architecture.md).
 
 ## Development

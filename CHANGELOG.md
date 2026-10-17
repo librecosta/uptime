@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P6-A: internal standalone bbolt/Redis history queries, explicit service removal,
+  and caller-owned cleanup, without a new CLI, archive format, or monitoring runtime.
+- Standalone storage coverage for locking, history, deletion, cancellation, safe
+  errors, resource ownership, and opt-in real Redis prefix/retention behavior.
+
 - P5.5: GET/HEAD `/` redirects with HTTP 302 to the configured UI path without
   forwarding queries; startup logs show the listener, protocol, and dashboard entry.
 - Original bbolt Schema v1 fixture and redirect/authentication regression coverage.
@@ -32,6 +37,11 @@ All notable changes to this project will be documented in this file.
   integration tests for UP/DOWN targets, persistence, cancellation, and failures.
 
 ### Changed
+
+- Pin Fiber Uptime to merged PR #2535 commit `e811012f822675810017efdf00823849f97f2323`
+  and its necessary dependency versions; see the upstream contract.
+- Reject Redis retention above 106750 days during offline config validation,
+  matching upstream's TTL bound without limiting bbolt retention.
 
 - P5.5: omitted `server.address` now defaults to `127.0.0.1:18580`; explicitly
   configure `:18580` for access beyond loopback. Explicit addresses keep their behavior.

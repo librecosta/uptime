@@ -9,6 +9,8 @@ and graceful shutdown. P4 adds upstream Redis persistence. P5 adds static native
 TLS and optional single-user Basic Auth using Fiber's official middleware.
 P5.5 adds loopback defaults, a configured root redirect, LibreCosta branding, and
 Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
+P6-A adds internal standalone history access and explicit removal using the
+merged upstream Redis Store API. Service CLI/archive behavior remains unimplemented.
 
 ## Start Here
 
@@ -22,7 +24,7 @@ Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 
 - `cmd/uptime`: executable entry point, minimal CLI, behavioral tests.
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
-- `internal/app`: capability gates, Fiber/Uptime composition, health and lifecycle.
+- `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
 - `configs`: official example that validates without external services or secrets.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
 - `.agents`: architectural boundaries and change workflow.

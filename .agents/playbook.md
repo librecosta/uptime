@@ -113,6 +113,9 @@ own keys; never use Reset, FLUSHDB, or FLUSHALL. Tests start from YAML, use real
 Redis with controlled client fault injection, and cover probing, history, isolation,
 startup failure, degraded operation, recovery, and shutdown ownership. Report skips
 separately from actual Redis integration passes.
+P6-A standalone storage tests use the same Redis group/job and random-prefix
+cleanup. They cover history/removal, retention TTL, isolation and resource
+ownership; regular checks also cover offline bbolt access/locking and safe errors.
 
 P5 tests generate a CA and SAN certificate in Go and use clients that trust that
 CA. Never bypass verification with InsecureSkipVerify. Cover all four HTTP/HTTPS

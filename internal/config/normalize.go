@@ -134,6 +134,11 @@ func normalize(raw rawConfig, lookup envLookup) (Config, error) {
 
 	cfg.Uptime.Interval = n.duration("uptime.interval", raw.Uptime.Interval, time.Second)
 	cfg.Uptime.Retention = n.days("uptime.retention", raw.Uptime.Retention)
+	// Match Uptime's Redis expiry backstop without opening storage. Embedded
+	// storage uses calendar-day retention and has no Redis duration limit.
+	if cfg.Storage.Type == StorageRedis && cfg.Uptime.Retention > CalendarDays(math.MaxInt64/(24*time.Hour)-1) {
+		n.fail("uptime.retention", "must not exceed 106750d for Redis storage")
+	}
 	cfg.Uptime.Window = n.days("uptime.window", raw.Uptime.Window)
 	if cfg.Uptime.Window > cfg.Uptime.Retention {
 		n.fail("uptime.window", "must not exceed retention")

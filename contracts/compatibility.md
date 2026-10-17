@@ -20,6 +20,8 @@ P1 adds the public `storage/bbolt` package: `Config`, `Store`, `Open`, the upstr
 Store methods, and `Name`, `Ping`, `RemoveService`, `Close`. Raw database/bucket
 access is private. P2's `internal/config.LoadFile` adds the product configuration
 contract; it does not open storage or construct a standalone runtime.
+P6-A adds only an internal standalone storage session, not a new CLI command or
+public SDK. It provides existing Store query types, explicit removal and Close.
 The module is `github.com/librecosta/uptime`; its Go baseline is 1.26. Go support
 follows the active Fiber major version's supported window; CI covers 1.26.x and
 1.27.x. Updating that window requires coordinated module, CI, and documentation
@@ -95,7 +97,7 @@ are not expanded or semantically validated and do not survive normalization.
 | Storage | literal `bbolt` or `redis`; bbolt path non-empty; Redis URL has redis/rediss scheme and host, no fragment, and passes pinned go-redis ParseURL |
 | Redis prefix | non-empty after env expansion; no leading/trailing colon or whitespace; no control characters; internal colons allowed |
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
-| Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; UTC/IANA/Local timezone |
+| Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
 | UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
 | Endpoint identity | at least one; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |

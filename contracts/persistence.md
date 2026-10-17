@@ -3,7 +3,7 @@
 P1 implements these constraints in the public `storage/bbolt` package. P3 supplies
 the same public Store to Fiber Uptime's standalone runtime; Schema v1 is unchanged.
 The bbolt representation and guarantees below apply to that backend. P4 Redis
-persistence uses Uptime v0.2.2's native backend through Fiber Storage Redis;
+persistence uses the pinned Uptime native backend through Fiber Storage Redis;
 LibreCosta does not define Redis keys, serialization, or a Redis Store implementation.
 
 ## Backend Selection and Ownership
@@ -20,6 +20,16 @@ LibreCosta does not define Redis keys, serialization, or a Redis Store implement
   recovery after handoff. No Reset/FLUSHDB/FLUSHALL or YAML tuning knobs.
 - After Uptime workers and HTTP handlers stop, close the Fiber Redis handle then
   its client. Preserve both failures together with primary/shutdown errors.
+
+P6-A standalone sessions reuse those resources without starting the runtime.
+They query through the public Store contract and remove services only on explicit
+request, using bbolt's method or upstream `uptime.RemoveService`. bbolt still
+requires exclusive file access; Redis sessions can coexist with other clients.
+The caller coordinates deletion with writers and stops operations before Close.
+Each session closes only its own resources, including on initialization failure.
+No cross-call transaction guarantee, implicit cleanup, archive or deletion policy
+is added. Offline configuration rejects Redis retention above 106750 days so its
+`(days + 1) * 24h` expiry fits `time.Duration`; bbolt retains calendar-day semantics.
 
 ## bbolt Schema v1
 
