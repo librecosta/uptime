@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.1.0]
+
+First stable release: YAML-configured HTTP/HTTPS monitoring, persistent history,
+and service management in a single binary. See the [release notes](docs/releases/v0.1.0.md)
+for installation options and key usage limits. Development history is retained below.
+
 ### Added
 
 - Guarded stable-tag release workflow for five binary archives, checksums and

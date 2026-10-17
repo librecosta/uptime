@@ -3,34 +3,59 @@
 LibreCosta Uptime is a self-hosted HTTP/HTTPS monitor in a single binary, configured
 with YAML and backed by bbolt by default, so no external database is needed.
 
-The project is pre-release. There are no official releases or published container
-images yet; use the `develop` branch to try it from source.
-
 ![LibreCosta Uptime dashboard preview](docs/assets/uptime-dashboard.webp)
 
 ## Quick Start
 
-Install Git and **Go 1.26+**, then run these commands from a terminal (Linux,
-macOS, or Windows PowerShell):
+Download the archive for your system from [GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.1.0):
+Linux and macOS (`darwin`) support amd64 and arm64; Windows supports amd64.
+Choose amd64 for Intel/AMD x64 or arm64 for Apple Silicon and ARM64 Linux.
+Verify the download against the release's `SHA256SUMS`, then extract the `.tar.gz`
+or Windows `.zip` into a new directory. No Go installation is needed.
+
+From the extracted directory, copy the example and edit `uptime.yaml` to set the
+endpoints you want to monitor before validating and starting the service.
+The example needs no Redis, TLS, or authentication environment variables.
+
+**Linux / macOS:**
 
 ```sh
-git clone --branch develop https://github.com/librecosta/uptime.git
-cd uptime
-cp configs/uptime.example.yaml uptime.yaml
+cp uptime.example.yaml uptime.yaml
+# Edit uptime.yaml before continuing.
+./uptime config check --config ./uptime.yaml
+./uptime serve --config ./uptime.yaml
 ```
 
-Edit `uptime.yaml` to set the endpoints you want to monitor. The example monitors
-`https://example.com/` and needs no Redis, TLS, or authentication environment variables.
-Validate the configuration, then start the service:
+**Windows PowerShell:**
 
-```sh
-go run ./cmd/uptime config check --config ./uptime.yaml
-go run ./cmd/uptime serve --config ./uptime.yaml
+```powershell
+Copy-Item .\uptime.example.yaml .\uptime.yaml
+# Edit uptime.yaml before continuing.
+.\uptime.exe config check --config .\uptime.yaml
+.\uptime.exe serve --config .\uptime.yaml
 ```
 
 Open **http://127.0.0.1:18580/** to reach the dashboard. Press **Ctrl+C** to stop.
 History is stored in `./data/uptime.db` and survives restarts. Keep that file when
 upgrading. The default listener accepts connections only from the local machine.
+
+### Other installation options
+
+For Docker on Linux amd64/arm64, run `docker pull ghcr.io/librecosta/uptime:v0.1.0`,
+then follow the
+[Docker guide](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/docker.md)
+to mount configuration and persistent storage.
+
+With **Go 1.26+**, you can also install from the versioned module:
+
+```sh
+go install github.com/librecosta/uptime/cmd/uptime@v0.1.0
+```
+
+Put Go's binary directory first in `PATH` and save the
+[example YAML](https://github.com/librecosta/uptime/blob/v0.1.0/configs/uptime.example.yaml)
+as `uptime.yaml`. Use `uptime` in place of `./uptime` below. Go installs retain
+`dev` / `unknown` version metadata; release archives include the version and commit.
 
 ## Features
 
@@ -45,7 +70,7 @@ upgrading. The default listener accepts connections only from the local machine.
 
 ## Configuration
 
-Start with the commented [example configuration](configs/uptime.example.yaml).
+Start with the commented [example configuration](https://github.com/librecosta/uptime/blob/v0.1.0/configs/uptime.example.yaml).
 Run `config check` after editing it and restart `serve` to apply changes.
 Validation does not open the database or start monitoring; enabled TLS certificate
 and key files are checked before startup.
@@ -63,7 +88,7 @@ Endpoint IDs are persistent identities. Keep them stable: changing an ID starts
 separate history, and removing an endpoint from YAML does not delete its history.
 
 For all fields and validation rules, see the
-[configuration reference](contracts/compatibility.md#yaml-configuration-p2).
+[configuration reference](https://github.com/librecosta/uptime/blob/v0.1.0/contracts/compatibility.md#yaml-configuration-p2).
 
 ### Storage
 
@@ -96,11 +121,13 @@ hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 already exist. Redis supports online queries, but an export is not a transactional
 snapshot across queries.
 
-From the repository root, list services and export an existing ID:
+From the directory containing your binary and configuration, list services and
+export an existing ID. These examples use Linux/macOS syntax; in PowerShell,
+replace `./uptime` with `.\uptime.exe`.
 
 ```sh
-go run ./cmd/uptime service list --config ./uptime.yaml
-go run ./cmd/uptime service export website --config ./uptime.yaml --output ./website.json
+./uptime service list --config ./uptime.yaml
+./uptime service export website --config ./uptime.yaml --output ./website.json
 ```
 
 The list shows persisted IDs, `active` or `detached` configuration status, and
@@ -114,7 +141,7 @@ To retire a service, first remove its ID from YAML and stop or update every moni
 still writing that ID. Then explicitly remove the stored service:
 
 ```sh
-go run ./cmd/uptime service remove website --config ./uptime.yaml
+./uptime service remove website --config ./uptime.yaml
 ```
 
 Removal permanently deletes its history, with no confirmation prompt or automatic
@@ -123,7 +150,7 @@ Redis writers must be coordinated; detached status does not prove they have stop
 Maintenance commands accept explicit `endpoints: []` after the last endpoint is
 retired; `serve` and `config check` still require at least one endpoint.
 
-Use `go run ./cmd/uptime --help` for command help and `go run ./cmd/uptime version`
+Use `./uptime --help` for command help and `./uptime version`
 for build information.
 
 ## Health Checks
@@ -139,14 +166,14 @@ remain unauthenticated when Basic Auth is enabled. The default dashboard is at
 
 ## Deployment and Development
 
-- [Docker deployment](docs/deployment/docker.md): build a local Linux amd64/arm64
-  image, mount configuration, and persist data with a non-root container.
-- [systemd deployment](docs/deployment/systemd.md): run on Linux with a dedicated
+- [Docker deployment](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/docker.md): use the GHCR Linux amd64/arm64
+  image with mounted configuration and persistent data in a non-root container.
+- [systemd deployment](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/systemd.md): run on Linux with a dedicated
   service account, persistent state, and graceful shutdown.
-- [Build local distribution archives](.agents/playbook.md#distribution-preview-p7-a)
+- [Build local distribution archives](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/playbook.md#distribution-preview-p7-a)
   for Linux, macOS, and Windows, including checksums.
-- [Development workflow](.agents/playbook.md), [architecture](.agents/architecture.md),
-  [engineering contracts](contracts/), and [changelog](CHANGELOG.md).
+- [Development workflow](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/playbook.md), [architecture](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/architecture.md),
+  [engineering contracts](https://github.com/librecosta/uptime/tree/v0.1.0/contracts), and [changelog](https://github.com/librecosta/uptime/blob/v0.1.0/CHANGELOG.md).
 
 The deployment guides cover secure exposure, upgrades, and offline bbolt backups.
 
@@ -158,4 +185,4 @@ the dashboard, and the status API.
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 LibreCosta.
+[MIT](https://github.com/librecosta/uptime/blob/v0.1.0/LICENSE). Copyright (c) 2026 LibreCosta.
