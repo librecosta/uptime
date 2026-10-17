@@ -64,6 +64,7 @@ maintenance configuration and safe Archive v1 JSON output. P6-B2 adds explicit
 removal of persisted services absent from the current YAML endpoint set.
 P7-A adds cross-platform distribution packaging and a manual Actions preview
 workflow. These are development previews, not official releases.
+P7-B adds non-root Linux Docker images and a hardened systemd deployment example.
 
 ## Build / Distribution Preview
 
@@ -119,8 +120,21 @@ The manual [distribution workflow](.github/workflows/distribution.yml) builds wi
 Go 1.26.x, checks all targets and runs a Linux amd64 CLI smoke test. It uploads only
 a seven-day Actions Artifact, without a Tag or Release. GitHub normally exposes
 the manual trigger once the workflow reaches the default branch; it does not
-change the `develop` / `pre-master` / `master` promotion process. Docker and
-deployment packaging remain P7-B work.
+change the `develop` / `pre-master` / `master` promotion process.
+
+## Deploy on Linux
+
+- [Docker](docs/deployment/docker.md): build local amd64/arm64 previews, mount
+  container-specific configuration read-only and persist bbolt in a named volume.
+  The image runs as UID/GID 65532 with system CA roots and no shell. Publish to
+  host loopback by default; the container YAML explicitly listens on `:18580`.
+- [systemd](docs/deployment/systemd.md): install a verified binary with a dedicated
+  service account, fixed working directory, private state and graceful shutdown.
+
+Both guides cover health checks, secure exposure, offline bbolt maintenance,
+backup and upgrades. GHCR images and official Releases are not published yet.
+The [Docker preview workflow](.github/workflows/docker-preview.yml) builds both
+architectures and tests amd64 persistence without pushing images.
 
 ## Validate Configuration
 

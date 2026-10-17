@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P7-B: multi-stage Linux amd64/arm64 Docker previews using Go 1.26 and Distroless
+  nonroot with CA roots, an isolated build context, container YAML and persistent
+  data ownership; no product defaults or dependencies change.
+- Restricted systemd unit and Docker/systemd deployment, shutdown, upgrade and
+  offline backup guides. Docker preview CI validates architecture, non-root
+  startup, health, graceful stop and retained bbolt data without pushing images.
+
 - P7-A: standard-library cross-platform builds for Linux/macOS amd64/arm64 and
   Windows amd64, explicit version/full Git SHA, allowlisted tar.gz/zip packages,
   SHA256SUMS verification and staged publication without overwriting existing data.

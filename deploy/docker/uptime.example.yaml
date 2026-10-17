@@ -1,0 +1,15 @@
+# Mount as /etc/uptime/uptime.yaml, read-only. Edit endpoints before starting.
+# Bind the published host port to 127.0.0.1 unless you configure secure exposure.
+server:
+  # Container loopback would not accept Docker's published port traffic.
+  address: ":18580"
+  shutdown_timeout: 10s
+storage:
+  type: bbolt
+  bbolt:
+    # Mount a named volume here; the image's directory belongs to UID/GID 65532.
+    path: /data/uptime.db
+endpoints:
+  - id: website
+    name: Website
+    url: https://example.com/

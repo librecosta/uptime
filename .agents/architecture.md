@@ -13,6 +13,8 @@ P6-B1 wires list/export into the CLI and freezes Archive v1. P6-B2 adds guarded
 removal through the same standalone session, without changing backend algorithms.
 P7-A adds `tools/dist`, a standard-library build/package helper outside the product
 runtime, and a manual Actions preview workflow. It does not change storage or CLI behavior.
+P7-B packages Linux Docker images and a systemd example using that same product
+entry point and linker variables. Deployment files do not participate in runtime policy.
 
 ```text
 cmd/uptime
@@ -54,6 +56,7 @@ upstream API in a new abstraction.
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
 | `tools/dist` | Five native targets, allowlisted archives and SHA256SUMS | Local builds and manual preview artifacts; no release publication |
+| `Dockerfile`, `deploy`, `docs/deployment` | Linux container/systemd delivery | Non-root, persistent data, deployment smoke; no image publication |
 | `contracts` | Stable engineering constraints | Present |
 | `docs/design` | Design rationale and implementation baselines | Present |
 | `docs/decisions` | Significant changes after the initial baseline | Loopback default and first access ADR |

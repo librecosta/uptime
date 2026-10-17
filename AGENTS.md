@@ -13,7 +13,8 @@ P6-A adds internal standalone history access and explicit removal using the
 merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
 P6-B2 adds guarded removal of persisted services absent from the current YAML.
 P7-A adds standard-library five-platform packaging and manual Actions previews;
-deployment packaging and official releases remain later work.
+P7-B adds Docker/systemd deployment and container previews. Official releases
+remain P8 work.
 
 ## Start Here
 
@@ -38,6 +39,8 @@ deployment packaging and official releases remain later work.
 - `docs/decisions`: significant decisions after the baseline.
 - `Makefile`, `.github/workflows/ci.yml`: local verification and CI.
 - `.github/workflows/distribution.yml`: manual preview artifacts only.
+- `Dockerfile`, `deploy`, `docs/deployment`: non-root Docker and systemd examples.
+- `.github/workflows/docker-preview.yml`: local-image builds and isolated container tests, no push.
 
 ## Sources of Truth
 
@@ -92,6 +95,10 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Distribution builds use the fixed module graph, explicit version/full SHA and
   CGO-free targets. Stage and verify all archives before publishing an output
   directory; refuse existing nonempty output and never package local config/data.
+- Docker keeps Go 1.26 cross-builds and existing linker metadata, fixed non-root
+  identity and CA roots. Configuration is explicitly mounted; persistent data
+  belongs in an owned named volume or prepared bind mount. Never auto-chown host
+  data, embed credentials, add an anonymous volume or publish preview images.
 
 ## Verification
 

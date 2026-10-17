@@ -169,3 +169,34 @@ The preview workflow performs these steps on Linux amd64 with Go 1.26.x and uplo
 only a seven-day Actions Artifact. Report cross-compiled targets separately from
 native executions and remote CI that has not run. No extra race/Redis run is
 required for packaging-only changes; preserve the existing CI jobs.
+
+## Docker / systemd Deployment (P7-B)
+
+Run `make check` once for repository validation. With a working Linux Docker
+daemon and Buildx, build from the repository root (PowerShell: assign
+`$sha = git rev-parse HEAD` and use `--build-arg "COMMIT=$sha"`):
+
+```sh
+docker buildx build --platform linux/amd64 --load --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" --tag librecosta-uptime:dev-amd64 .
+docker buildx build --platform linux/arm64 --load --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" --tag librecosta-uptime:dev-arm64 .
+docker image inspect --format '{{.Os}}/{{.Architecture}} {{.Config.User}}' librecosta-uptime:dev-amd64 librecosta-uptime:dev-arm64
+bash deploy/docker/smoke.sh librecosta-uptime:dev-amd64 "$(git rev-parse HEAD)"
+```
+
+Smoke requires Bash, curl, tar and an amd64 Linux Docker host. It checks version,
+help/config, CA roots, runtime contents, missing config, non-root named-volume
+initialization, health/root redirect, graceful stop, detached data after container
+replacement, and read-only storage failure. It traps exit/signals to remove only
+its unique containers, volume and temporary files. Verify cleanup if interrupted;
+never prune unrelated Docker resources. No ARM64 execution or QEMU is required.
+
+The Docker preview workflow runs this same smoke, manually or after a develop push
+touching Docker inputs. It never logs in or pushes to a registry. Keep existing CI
+and P7-A unchanged. Do not repeat race/Redis for deployment-only changes. If Docker
+is unavailable, report image/run checks unverified, not passed. A newly added
+workflow has not run remotely until a permitted push and Actions run occur.
+
+On a systemd host, follow the installation guide and run `systemd-analyze verify`
+after installing the binary/unit. Report static review separately from an actual
+service start; do not install or change host services merely to make a local check
+pass. Deployment examples must preserve process-CWD paths and offline bbolt locks.

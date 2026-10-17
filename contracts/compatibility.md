@@ -59,6 +59,35 @@ repository permissions. No Tag, Release or deployment publication is implied.
 Unpacking never creates configuration; process-CWD paths and loopback defaults
 remain unchanged. Make's existing build/check semantics remain unchanged.
 
+## Linux Deployment (P7-B)
+
+Docker builds only Linux amd64/arm64 with Go 1.26, CGO disabled and the existing
+P7-A version/full-commit linker variables. The runtime is Distroless static Debian
+13 nonroot with CA roots, fixed UID/GID 65532:65532, and process CWD `/data`.
+It adds only the executable, original MIT license and owned 0700 data directory;
+the build context allowlists module files and product Go source. No configuration,
+private keys, database, toolchain or shell is packaged.
+
+Exec-form ENTRYPOINT runs uptime directly; CMD is `serve --config
+/etc/uptime/uptime.yaml`. No anonymous VOLUME or fixed HEALTHCHECK is declared.
+EXPOSE 18580 does not change YAML defaults. The Docker example explicitly selects
+`:18580` and `/data/uptime.db`; ports are published on host loopback by default.
+New named volumes inherit data-directory permissions. Administrators prepare bind
+mount ownership and read-only config/TLS access; startup never auto-chowns data.
+
+systemd uses the dedicated `librecosta-uptime` user, absolute binary/config paths,
+`WorkingDirectory=/var/lib/librecosta-uptime` and its writable StateDirectory.
+The ordinary `./data/uptime.db` resolves inside that state directory. Basic
+hardening permits required networking and state writes, grants no capabilities,
+and protects home/system paths. Docker/systemd stop timeouts exceed the configured
+application shutdown timeout; SIGTERM reaches the existing graceful shutdown.
+
+bbolt backup and management require stopping serve; container replacement retains
+the named volume. Redis's existing coordination and snapshot limits remain in force.
+There is no deployment-driven migration, automatic backup, configuration rewrite
+or product behavior change. Docker previews build/test locally without registry
+login, push or release, and do not alter P7-A's archive contract.
+
 ## YAML Configuration (P2)
 
 The [official example](../configs/uptime.example.yaml) shows the supported keys.
