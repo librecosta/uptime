@@ -6,6 +6,8 @@ with YAML and backed by bbolt by default, so no external database is needed.
 The project is pre-release. There are no official releases or published container
 images yet; use the `develop` branch to try it from source.
 
+![LibreCosta Uptime dashboard preview](docs/assets/uptime-dashboard.webp)
+
 ## Quick Start
 
 Install Git and **Go 1.26+**, then run these commands from a terminal (Linux,
