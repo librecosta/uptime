@@ -3,11 +3,13 @@
 ## Current Surface
 
 The executable exposes help (`uptime`, `help`, `-h`, `--help`), version
-(`version`, `--version`), `config check [--config PATH]`, and `serve [--config PATH]`.
-Both configuration commands default to `./uptime.yaml` and have `-h`/`--help`.
+(`version`, `--version`), `config check [--config PATH]`, `serve [--config PATH]`,
+`service list [--config PATH]`, `service export <id> [--config PATH] [--output PATH]`,
+and `service remove <id> [--config PATH]`.
+Configuration commands default to `./uptime.yaml` and have `-h`/`--help`.
 There is no global `--config`.
 Bare `config`, unexpected arguments, and unknown commands/options are usage
-errors. Service/archive commands remain unimplemented.
+errors. Bare `service` shows its help.
 
 Successful output goes to stdout; diagnostics go to stderr. Help, version, and
 valid configuration return 0; usage errors return 2; invalid/unreadable YAML,
@@ -20,10 +22,97 @@ P1 adds the public `storage/bbolt` package: `Config`, `Store`, `Open`, the upstr
 Store methods, and `Name`, `Ping`, `RemoveService`, `Close`. Raw database/bucket
 access is private. P2's `internal/config.LoadFile` adds the product configuration
 contract; it does not open storage or construct a standalone runtime.
+P6-A adds only an internal standalone storage session, not a new CLI command or
+public SDK. It provides existing Store query types, explicit removal and Close.
 The module is `github.com/librecosta/uptime`; its Go baseline is 1.26. Go support
 follows the active Fiber major version's supported window; CI covers 1.26.x and
 1.27.x. Updating that window requires coordinated module, CI, and documentation
 changes.
+
+## Distribution Preview (P7-A)
+
+`tools/dist` is a repository build helper, not a product CLI command. It builds
+Linux amd64/arm64, Darwin amd64/arm64 and Windows amd64 using the pinned module
+graph and CGO_ENABLED=0. Explicit version and full 40-digit hexadecimal Git SHA
+are required for building; normal source runs retain `dev` / `unknown`.
+Versions are 1..64 ASCII letters/digits/dot/underscore/hyphen, beginning with a
+letter/digit, excluding `..` and `unknown`. No shell interpolation is used.
+
+Archives are `librecosta-uptime_<version>_<GOOS>_<GOARCH>.tar.gz` (Unix) or `.zip`
+(Windows). Each has exactly five regular files in order: `uptime` or
+`uptime.exe` (0755), `uptime.example.yaml`, `README.md`, `LICENSE`, and
+`docs/assets/uptime-dashboard.webp` (all four resources 0644).
+Resources are copied verbatim from their official repository sources; the image
+retains the relative path used by README. No separate directory entries or other
+paths are admitted. Symlink sources are refused, including parent components.
+Never package user configuration, secrets or data.
+`SHA256SUMS` contains exactly the five archive hashes in lexical filename order,
+using lowercase SHA-256, two spaces, filename and newline. No self-checksum.
+
+Build/package/checksum validation finishes in a temporary sibling directory before
+final publication. Refuse existing nonempty output, files and symlinks. Failures
+must not leave a partial final distribution; cleanup is limited to owned staging.
+The parent directory must exist. Reproducible target/content contracts do not
+promise identical bytes across Go versions or machines. `--verify` checks the full
+set, member permissions and binary architecture without executing downloaded code;
+native version/help/config smoke is a separate acceptance step.
+
+The preview workflow uses Go 1.26.x and only Actions Artifacts, with read-only
+repository permissions, manually or on PRs targeting pre-master. No Tag, Release
+or deployment publication is implied.
+Unpacking never creates configuration; process-CWD paths and loopback defaults
+remain unchanged. Make's existing build/check semantics remain unchanged.
+
+## Stable Release Publication
+
+Only a stable `vMAJOR.MINOR.PATCH` tag push in `librecosta/uptime` can enter the
+release workflow. A read-only job must verify that the dereferenced tag is
+exactly the current `origin/master` HEAD, not just an ancestor, and fix its full
+SHA before enabling publishing jobs. Prerelease suffixes and leading zeroes are
+rejected. All archives and Docker images use that same version and SHA.
+
+Release assets are exactly the five P7-A archives plus SHA256SUMS, after
+`tools/dist --verify`, checksum checks and Linux amd64 version/help/config smoke.
+GHCR publishes only `ghcr.io/librecosta/uptime:<version>` and `:latest`, pointing
+to the same linux/amd64 + linux/arm64 manifest. The existing Dockerfile, runtime
+identity and OCI source/revision/version labels remain authoritative.
+
+Only the Release job receives `contents: write`; only the image job receives
+`packages: write`. Previews and validation remain read-only. Publication is
+serialized, existing version images/releases are refused, and assets are never
+silently replaced. Images precede Release creation; cross-service atomicity is
+not promised. Failures may leave partial output for manual reconciliation, never
+automatic deletion. The independent Windows RC acceptance and human integration
+approval remain release prerequisites, not consequences of workflow validation.
+
+## Linux Deployment (P7-B)
+
+Docker builds only Linux amd64/arm64 with Go 1.26, CGO disabled and the existing
+P7-A version/full-commit linker variables. The runtime is Distroless static Debian
+13 nonroot with CA roots, fixed UID/GID 65532:65532, and process CWD `/data`.
+It adds only the executable, original MIT license and owned 0700 data directory;
+the build context allowlists module files and product Go source. No configuration,
+private keys, database, toolchain or shell is packaged.
+
+Exec-form ENTRYPOINT runs uptime directly; CMD is `serve --config
+/etc/uptime/uptime.yaml`. No anonymous VOLUME or fixed HEALTHCHECK is declared.
+EXPOSE 18580 does not change YAML defaults. The Docker example explicitly selects
+`:18580` and `/data/uptime.db`; ports are published on host loopback by default.
+New named volumes inherit data-directory permissions. Administrators prepare bind
+mount ownership and read-only config/TLS access; startup never auto-chowns data.
+
+systemd uses the dedicated `librecosta-uptime` user, absolute binary/config paths,
+`WorkingDirectory=/var/lib/librecosta-uptime` and its writable StateDirectory.
+The ordinary `./data/uptime.db` resolves inside that state directory. Basic
+hardening permits required networking and state writes, grants no capabilities,
+and protects home/system paths. Docker/systemd stop timeouts exceed the configured
+application shutdown timeout; SIGTERM reaches the existing graceful shutdown.
+
+bbolt backup and management require stopping serve; container replacement retains
+the named volume. Redis's existing coordination and snapshot limits remain in force.
+There is no deployment-driven migration, automatic backup, configuration rewrite
+or product behavior change. Docker previews build/test locally without registry
+login, push or release, and do not alter P7-A's archive contract.
 
 ## YAML Configuration (P2)
 
@@ -47,7 +136,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 
 | Field | Omitted value |
 | --- | --- |
-| `server.address` | `:8080` |
+| `server.address` | `127.0.0.1:18580` |
 | `server.shutdown_timeout` | `10s` |
 | `server.tls.enabled`, `auth.enabled` | `false` |
 | `storage.type` | `bbolt` |
@@ -58,7 +147,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `uptime.timezone` | `UTC` |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
 | `ui.description` | `Current service availability.` |
-| `ui.footer` | `Powered by DeepFurry Uptime.` |
+| `ui.footer` | `Powered by LibreCosta Uptime.` |
 | `ui.favicon_url` | empty, built-in favicon |
 | `ui.thresholds.green`, `ui.thresholds.yellow` | `0.999`, `0.99` |
 | endpoint `name`, `method` | its literal ID, `GET` |
@@ -66,6 +155,10 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | endpoint `description`, `headers`, `expected_status_codes` | empty |
 
 Explicit empty required values are errors, never replaced by defaults.
+P5.5 changes the omitted listener from `:8080` to loopback `127.0.0.1:18580`.
+Explicit addresses retain their syntax and behavior. Public, Docker, and remote
+proxy access can use `:18580` explicitly; a local proxy may keep loopback.
+See [ADR 0001](../docs/decisions/0001-local-first-startup.md).
 
 ### Environment and Active Branches
 
@@ -91,10 +184,10 @@ are not expanded or semantically validated and do not survive normalization.
 | Storage | literal `bbolt` or `redis`; bbolt path non-empty; Redis URL has redis/rediss scheme and host, no fragment, and passes pinned go-redis ParseURL |
 | Redis prefix | non-empty after env expansion; no leading/trailing colon or whitespace; no control characters; internal colons allowed |
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
-| Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; UTC/IANA/Local timezone |
+| Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
-| UI text | description/footer must be non-empty; omission uses DeepFurry defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
-| Endpoint identity | at least one; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
+| UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
+| Endpoint identity | at least one for serve/config check; maintenance also allows explicit `endpoints: []`; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
 | Endpoint request | literal uppercase GET/HEAD; http/https URL with host, no userinfo/fragment, query allowed |
 | Endpoint timing | interval >= 1s; 1ms <= timeout <= effective endpoint interval |
 | Expected codes | unique 100..599; empty means the upstream 2xx/3xx policy |
@@ -117,7 +210,93 @@ binds ports, or constructs Fiber/Uptime. Errors identify fields/categories witho
 printing Redis credentials, hashes, header values, secret URL queries, TLS keys,
 or environment values. Do not implement config stringification or dumps.
 
-## Standalone Runtime (P3–P5)
+## Service List and Archive v1 (P6-B1)
+
+`service list/export` use `LoadServiceFile`, which permits only the additional case
+of explicit `endpoints: []`. Omitted or null endpoints remain invalid. All other
+strict/active validation and CWD path rules are unchanged. Help opens no config or
+storage. Options may precede or follow the export ID; `--output` is export-only.
+There is no `--force`, `--yes`, or `--online`.
+
+The list contains only persisted services, sorted lexically by ID, with columns
+`ID`, `STATUS`, `LAST SEEN (UTC)`. Status is lowercase `active` iff the ID is in
+current YAML, otherwise `detached`; neither is a liveness or writer-exclusion claim.
+Times are UTC RFC3339, zero is `-`, and an empty store prints only the header.
+IDs containing invalid UTF-8, whitespace or non-printable characters use ASCII escapes.
+
+Archive v1 has these stable JSON fields (no backend-dependent shape):
+
+| Object | Fields |
+| --- | --- |
+| Root | `format` = `librecosta-uptime-service-archive`, integer `version` = 1, `application_version` from the CLI build, `exported_at`, `timezone`, `service`, `daily`, `current_day` |
+| `service` | string `id`, `name`, `description`, `sample_interval`; UTC RFC3339 `created_at`/`last_seen_at` omitted only when zero |
+| `daily[]` | local date `day`, integer `up_slots`/`expected_slots`, boolean `finalized` |
+| `current_day` | local date `day`, integer `up_slots`/`expected_slots_so_far` |
+
+Export time is injected and formatted UTC RFC3339; the timezone is the normalized
+configuration's location name. An empty description stays `""`; empty daily history
+is `[]`. Persisted sample intervals >=1s win; otherwise use the global YAML interval,
+rendered as a Go duration string. Existence is checked before history queries.
+Daily queries select one ID with no bounds, preserve all real counts/finality
+(including any daily row for today), sort ascending by day, and never fill missing
+dates or run maintenance. Today's raw up count is zero if absent and never clamped.
+
+Expected current-day slots are theoretical: from local midnight to the start of
+the current slot, subtract the floor-aligned slot of max(midnight, CreatedAt),
+clamped at zero. Use actual elapsed duration and calendar next-midnight (`AddDate`)
+for DST; future creation gives zero. LastSeenAt does not reduce this count. Daily
+rows and current raw samples are distinct sources, not additive history. There is
+no cross-query Redis snapshot guarantee or import/restore facility.
+
+Only whitelisted service/history fields are serialized: no configuration, endpoint
+URLs, headers, auth/TLS data, Redis URLs, raw slot IDs or instance/PID/hostname.
+Queries and storage Close finish before success output or publication. Missing
+services, query/close failures and output errors return 1 with safe stderr; usage
+errors return 2; success/help return 0. No success text is emitted on failure.
+
+Default output is `uptime-service-YYYYMMDDTHHMMSSZ.json` in CWD, independent of ID.
+Explicit paths also use CWD. UTF-8 JSON is indented with a trailing newline.
+Write to an owned same-directory 0600 temporary file, Sync, Close, then hard-link
+to the final name without replacement and remove the temporary name. Never create
+parents or replace files/symlinks; unsupported filesystems fail safely. Windows
+permissions follow directory ACLs. A failure after publication may leave a complete
+archive (for example, stdout or temporary-name cleanup failure); it never truncates
+an existing target. No direct-to-final or unconditional rename fallback exists.
+
+bbolt maintenance uses an existing file with an exclusive lock and never creates
+a new file or parent. `Config.MustExist` enforces this at open, avoiding a Stat/create
+race; ordinary `Open` and `serve` still initialize new databases. Stop serve before
+bbolt management; Redis may be queried online. Neither command starts HTTP/probes
+or writes source history, and changing YAML never implicitly deletes history.
+
+## Safe Service Removal (P6-B2)
+
+`service remove <id> [--config PATH]` reuses service argument parsing and maintenance
+loading, including explicit `endpoints: []` and CWD paths. Options may precede or
+follow the ID; `--output` is not accepted. Help reads no config or storage.
+
+Before opening storage, reject any ID in the loaded YAML endpoints using the same
+membership rule as list. This also rejects active IDs absent from storage. For a
+detached ID, open the existing selected backend, call ListServices to verify
+existence, invoke P6-A's RemoveService exactly once, then ListServices again to
+confirm the ID is absent at that moment. Unknown IDs fail without deleting anything.
+No implicit export, confirmation prompt, force bypass, retry or restore is added.
+
+Only the selected service and its history are deleted. Existing bbolt file locking,
+Redis database/prefix selection, schema, and deletion algorithms remain unchanged.
+Stop serve before bbolt management. For Redis, update/restart or stop all writers
+using the old ID before removal: YAML membership and read-back are not a distributed
+lock or a cross-client transaction, and concurrent writers can recreate records.
+
+Close storage before printing `service removed` with a newline. Success/help return
+0, usage errors 2, and active/unknown/storage/operation/read-back/Close/output failures
+1. Failed commands emit no success text; safe diagnostics never echo the supplied
+ID or underlying sensitive errors. Operation and Close causes are preserved internally.
+A failure after attempting deletion does not imply data was unchanged or rolled back.
+Removing the final stored service is permitted with explicit empty endpoints; serve
+and config check still require at least one endpoint. Archive v1 is unchanged.
+
+## Standalone Runtime (P3–P5.5)
 
 `serve` loads normalized configuration and accepts bbolt or Redis, HTTP or HTTPS,
 and optional single-user Basic Auth. `rediss://` secures the outbound Redis
@@ -139,7 +318,7 @@ and semantic validation and leaves Auth nil.
 Fiber official BasicAuth protects exactly `ui.path` and paths starting with
 `ui.path + "/"`. For `/status`, `/status2` and `/status-page` stay outside auth.
 Health always remains public. Missing/wrong credentials receive Fiber's 401 Basic
-challenge with fixed realm `DeepFurry Uptime`, `Cache-Control: no-store`, and
+challenge with fixed realm `LibreCosta Uptime`, `Cache-Control: no-store`, and
 `Vary: Authorization`; the response body is not a product ABI. Correct credentials
 permit the dashboard/API; authenticated unknown descendants remain 404.
 BasicAuth constructor rejection becomes the safe operational error
@@ -156,6 +335,12 @@ failures, unexpected Listener return (including nil), shutdown/close errors, and
 output failures return 1. Usage errors return 2. Operational errors use a safe
 `serve: <error>` stderr diagnostic; runtime does not dump config or secrets.
 Lifecycle logging uses Fiber's official logger on stderr, with no startup banner.
+The successful OnListen log identifies LibreCosta Uptime, the bound listener,
+HTTP/HTTPS, and the configured dashboard path. HTTP on loopback prints its actual
+local URL. Wildcard listeners use a host placeholder; HTTPS always uses a
+certificate-host placeholder and asks for a certificate-covered hostname/IP,
+without assuming localhost is valid. Logs never include endpoint/Redis URLs,
+request headers, auth credentials, or the normalized configuration.
 
 | Route | Exact response |
 | --- | --- |
@@ -167,7 +352,9 @@ Both health routes set `Content-Type: text/plain; charset=utf-8` and
 documented blocked-I/O cancellation limits still apply. Failures expose no details
 and produce no per-request error log. Target DOWN never changes readiness.
 The configured `ui.path` and `<ui.path>/api/status` are upstream dashboard/API
-routes. Root `/` remains 404 without a dashboard redirect. Only YAML endpoints
+routes. GET/HEAD `/` returns HTTP 302 to the validated `ui.path`, without copying the
+incoming query. The redirect is public; the target dashboard/API still requires
+Basic Auth when enabled. Other root methods and unmatched paths remain 404. Only YAML endpoints
 are monitored; no self service is manufactured.
 
 Startup opens selected storage, completes preflight Ping, and binds before

@@ -12,16 +12,32 @@ import (
 
 // LoadFile validates one YAML document. Relative paths remain relative to the
 // process working directory. Only the YAML and active TLS files are read.
+// At least one endpoint is required; errors omit configured values.
 func LoadFile(path string) (Config, error) {
+	return loadFile(path, false)
+}
+
+// LoadServiceFile validates maintenance configuration. Only an explicitly empty
+// endpoints sequence is additionally allowed; omitted endpoints remain invalid.
+// All other validation and file access rules are the same as LoadFile.
+func LoadServiceFile(path string) (Config, error) {
+	return loadFile(path, true)
+}
+
+func loadFile(path string, maintenance bool) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// File paths can themselves contain injected secrets; do not wrap PathError.
 		return Config{}, fmt.Errorf("configuration: cannot read file")
 	}
-	return load(data, os.LookupEnv)
+	return loadMode(data, os.LookupEnv, maintenance)
 }
 
 func load(data []byte, lookup envLookup) (Config, error) {
+	return loadMode(data, lookup, false)
+}
+
+func loadMode(data []byte, lookup envLookup, maintenance bool) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
 	if err := decoder.Decode(&doc); err != nil || len(doc.Content) != 1 {
@@ -42,7 +58,7 @@ func load(data []byte, lookup envLookup) (Config, error) {
 		return Config{}, fmt.Errorf("configuration: invalid YAML field value")
 	}
 	raw.defaults()
-	return normalize(raw, lookup)
+	return normalize(raw, lookup, maintenance)
 }
 
 // checkNode enforces the raw schema before decoding can coerce scalars or treat

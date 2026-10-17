@@ -1,16 +1,23 @@
 # Validate without starting a runtime:
 #   uptime config check --config configs/uptime.example.yaml
-# Filesystem paths are relative to the process working directory, not this file.
+# Relative paths use the process working directory, not this file's directory.
 server:
-  address: ":8080"
+  # Local connections only. Docker needs ":18580" inside the container;
+  # publish the host port on loopback for local access.
+  address: "127.0.0.1:18580"
   shutdown_timeout: 10s
   tls:
-    # When enabled: HTTPS only, static matching cert/key, TLS 1.2 minimum.
+    # Enable HTTPS with a matching certificate and private key (TLS 1.2+).
+    # The variables below are only required when TLS is enabled.
     enabled: false
     cert_file: "${UPTIME_TLS_CERT}"
     key_file: "${UPTIME_TLS_KEY}"
 
 storage:
+  # bbolt uses a local file with exclusive access; no external server is needed.
+  # redis uses an external server; shared storage does not coordinate probes.
+  # Environment variables in the inactive branch are not required or expanded.
+  # Switching backends does not migrate existing history.
   type: bbolt
   bbolt:
     path: ./data/uptime.db
@@ -19,30 +26,37 @@ storage:
     key_prefix: fiber:uptime
 
 auth:
-  # Protects the UI/API namespace; health stays public. Use TLS or a trusted TLS proxy.
+  # Enable Basic Auth for the UI/API; health endpoints stay public.
+  # The variables below are only required when enabled. Use TLS or a trusted TLS proxy.
   enabled: false
   basic:
     username: "${UPTIME_AUTH_USERNAME}"
-    # bcrypt ($2a$/$2b$/$2y$); hash NFC-normalized bytes for non-ASCII passwords.
+    # Use a bcrypt hash, never plaintext. Normalize non-ASCII passwords to NFC first.
     password_hash: "${UPTIME_AUTH_PASSWORD_HASH}"
 
 uptime:
+  # Default probe interval; individual endpoints can override it.
   interval: 10s
+  # Retention controls stored history; window is the dashboard range (<= retention).
   retention: 90d
   window: 30d
+  # Timezone for calendar-day boundaries in history (UTC or an IANA name).
   timezone: UTC
 
 ui:
   path: /uptime
   title: Service Status
   description: Current service availability.
-  footer: Powered by DeepFurry Uptime.
+  footer: Powered by LibreCosta Uptime.
   favicon_url: ""
+  # Color thresholds are uptime ratios: 0.999 means 99.9%.
   thresholds:
     green: 0.999
     yellow: 0.99
 
 endpoints:
+  # IDs identify persisted services. Keep them unique and stable: changing an ID
+  # starts a separate history; removing an endpoint does not delete stored history.
   - id: website
     name: Website
     description: Example website

@@ -1,11 +1,32 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
 )
+
+func TestRedisRetentionLimit(t *testing.T) {
+	for _, backend := range []string{"bbolt", "redis"} {
+		for _, days := range []int{1, 90, 106750, 106751, 200000} {
+			changes := map[string]any{"storage.type": backend, "storage.redis.url": "redis://user:SECRET@never-resolves.invalid", "uptime.retention": fmt.Sprintf("%dd", days), "uptime.window": "1d"}
+			cfg, err := load(configData(t, changes), emptyEnv)
+			if backend == "redis" && days > 106750 {
+				if err == nil || !strings.Contains(err.Error(), "uptime.retention") || strings.Contains(err.Error(), "SECRET") {
+					t.Fatalf("missing or unsafe Redis retention error: %v", err)
+				}
+			} else if err != nil || cfg.Uptime.Retention != CalendarDays(days) {
+				t.Fatalf("%s retention %d: %v", backend, days, err)
+			}
+		}
+		cfg := mustLoad(t, configData(t, map[string]any{"storage.type": backend, "storage.redis.url": "redis://never-resolves.invalid"}), emptyEnv)
+		if cfg.Uptime.Retention != 90 {
+			t.Fatal("retention default changed")
+		}
+	}
+}
 
 func TestRedisURLParserContract(t *testing.T) {
 	for _, value := range []string{

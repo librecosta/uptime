@@ -7,6 +7,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// format is the historical persistence identity, retained across product renames
+// so existing databases remain readable. It is not a display brand.
 const format = "deepfurry-uptime-bbolt"
 const schemaVersion uint64 = 1
 
@@ -28,6 +30,9 @@ func initializeSchema(tx *bolt.Tx) error {
 	return meta.Put([]byte("schema_version"), encodeUint64(schemaVersion))
 }
 
+// validateSchema checks identity and top-level structure, not every stored record.
+// Record readers validate accessed fields; unsupported versions are never repaired
+// or migrated implicitly.
 func validateSchema(tx *bolt.Tx) error {
 	for _, name := range topBuckets {
 		if tx.Bucket([]byte(name)) == nil {

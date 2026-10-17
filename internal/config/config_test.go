@@ -81,7 +81,7 @@ func wantInvalid(t *testing.T, data []byte, lookup envLookup, field string) {
 
 func TestDefaults(t *testing.T) {
 	cfg := mustLoad(t, []byte(minimal), emptyEnv)
-	if cfg.Server.Address != ":8080" || cfg.Server.ShutdownTimeout != 10*time.Second || cfg.Server.TLS != nil || cfg.Auth != nil {
+	if cfg.Server.Address != "127.0.0.1:18580" || cfg.Server.ShutdownTimeout != 10*time.Second || cfg.Server.TLS != nil || cfg.Auth != nil {
 		t.Fatal("server/auth defaults")
 	}
 	if cfg.Storage.Type != StorageBbolt || cfg.Storage.Bbolt == nil || cfg.Storage.Bbolt.Path != "./data/uptime.db" || cfg.Storage.Redis != nil {
@@ -90,7 +90,7 @@ func TestDefaults(t *testing.T) {
 	if cfg.Uptime.Interval != 10*time.Second || cfg.Uptime.Retention != CalendarDays(90) || cfg.Uptime.Window != CalendarDays(30) || cfg.Uptime.Timezone != time.UTC {
 		t.Fatal("uptime defaults")
 	}
-	if cfg.UI.Path != "/uptime" || cfg.UI.Title != "Service Status" || cfg.UI.Description != "Current service availability." || cfg.UI.Footer != "Powered by DeepFurry Uptime." || cfg.UI.FaviconURL != nil || cfg.UI.Thresholds != (ThresholdConfig{0.999, 0.99}) {
+	if cfg.UI.Path != "/uptime" || cfg.UI.Title != "Service Status" || cfg.UI.Description != "Current service availability." || cfg.UI.Footer != "Powered by LibreCosta Uptime." || cfg.UI.FaviconURL != nil || cfg.UI.Thresholds != (ThresholdConfig{0.999, 0.99}) {
 		t.Fatal("UI defaults")
 	}
 	e := cfg.Endpoints[0]
@@ -248,7 +248,7 @@ func TestCalendarDays(t *testing.T) {
 }
 
 func TestValidOverrides(t *testing.T) {
-	for _, address := range []string{":1", ":65535", "127.0.0.1:8080", "localhost:8080", "[::]:8080", "[::1]:8080"} {
+	for _, address := range []string{":1", ":65535", ":8080", ":18580", "127.0.0.1:18580", "127.0.0.1:8080", "localhost:8080", "[::]:8080", "[::1]:8080"} {
 		cfg := mustLoad(t, configData(t, map[string]any{"server.address": address}), emptyEnv)
 		if cfg.Server.Address != address {
 			t.Fatal("address changed")

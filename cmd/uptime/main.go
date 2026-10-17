@@ -1,4 +1,6 @@
-// Command uptime provides the DeepFurry Uptime CLI.
+// Command uptime provides the LibreCosta Uptime CLI.
+// Help and version need no configuration; config check validates without opening
+// storage. Only serve starts monitoring, while service commands use standalone sessions.
 package main
 
 import (
@@ -16,12 +18,14 @@ import (
 	"github.com/librecosta/uptime/internal/config"
 )
 
+// Distribution builds inject these with -ldflags -X; ordinary source runs retain
+// the development defaults without consulting Git or the working directory.
 var (
 	version = "dev"
 	commit  = "unknown"
 )
 
-const helpText = `DeepFurry Uptime
+const helpText = `LibreCosta Uptime
 
 Usage:
   uptime [command]
@@ -31,6 +35,9 @@ Commands:
   version       Show version information
   config check  Validate configuration
   serve         Run the uptime service
+  service list  List persisted services and their configuration status
+  service export <id>  Export service history as Archive v1 JSON
+  service remove <id>  Permanently remove a detached service and its history
 
 Options:
   -h, --help    Show this help
@@ -47,7 +54,12 @@ func main() {
 	os.Exit(code)
 }
 
+// run returns 0 for success, 2 for usage errors, and 1 for operational or output
+// failures. Successful output goes to stdout and diagnostics to stderr.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "service" {
+		return serviceCommand(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		return serve(ctx, args[1:], stdout, stderr)
 	}
@@ -71,7 +83,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		_, err = io.WriteString(stdout, helpText)
 	case "version", "--version":
-		_, err = fmt.Fprintf(stdout, "DeepFurry Uptime %s\nGo: %s\nCommit: %s\n", version, runtime.Version(), commit)
+		_, err = fmt.Fprintf(stdout, "LibreCosta Uptime %s\nGo: %s\nCommit: %s\n", version, runtime.Version(), commit)
 	default:
 		return diagnostic(stderr, "error: unknown command or option; use 'uptime --help'", 2)
 	}

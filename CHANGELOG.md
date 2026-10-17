@@ -4,7 +4,51 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.1.0]
+
+First stable release: YAML-configured HTTP/HTTPS monitoring, persistent history,
+and service management in a single binary. See the [release notes](docs/releases/v0.1.0.md)
+for installation options and key usage limits. Development history is retained below.
+
 ### Added
+
+- Guarded stable-tag release workflow for five binary archives, checksums and
+  GHCR multi-architecture images from the same master commit; read-only
+  distribution and Docker previews now also run on pre-master PRs.
+
+- P7-B: multi-stage Linux amd64/arm64 Docker previews using Go 1.26 and Distroless
+  nonroot with CA roots, an isolated build context, container YAML and persistent
+  data ownership; no product defaults or dependencies change.
+- Restricted systemd unit and Docker/systemd deployment, shutdown, upgrade and
+  offline backup guides. Docker preview CI validates architecture, non-root
+  startup, health, graceful stop and retained bbolt data without pushing images.
+
+- P7-A: standard-library cross-platform builds for Linux/macOS amd64/arm64 and
+  Windows amd64, explicit version/full Git SHA, allowlisted tar.gz/zip packages,
+  SHA256SUMS verification and staged publication without overwriting existing data.
+- Manual Go 1.26.x Actions distribution previews with binary/architecture checks,
+  Linux CLI smoke and seven-day artifacts; no Tag or Release publication.
+
+- P6-B2: `service remove <id>` refuses configured IDs before opening storage,
+  requires persisted history, deletes through the standalone session, and reads
+  back/closes before success output. Includes last-service retirement, offline
+  locking, Redis prefix isolation, and safe failure regression coverage.
+
+- P6-B1: `service list` with YAML-derived active/detached status and UTC times,
+  and `service export` with versioned Archive v1 JSON, complete persisted daily
+  history, DST-aware current-day slots, and atomic no-overwrite file publication.
+- Maintenance configuration accepts explicit `endpoints: []` while serve/config
+  check retain their original validation; all other strict/active rules still apply.
+- CLI/archive regression tests and shared bbolt/Redis list/export coverage.
+
+- P6-A: internal standalone bbolt/Redis history queries, explicit service removal,
+  and caller-owned cleanup, without a new CLI, archive format, or monitoring runtime.
+- Standalone storage coverage for locking, history, deletion, cancellation, safe
+  errors, resource ownership, and opt-in real Redis prefix/retention behavior.
+
+- P5.5: GET/HEAD `/` redirects with HTTP 302 to the configured UI path without
+  forwarding queries; startup logs show the listener, protocol, and dashboard entry.
+- Original bbolt Schema v1 fixture and redirect/authentication regression coverage.
 
 - Native static TLS using the preloaded certificate, TLS 1.2 minimum, and tracked
   connection draining, including stalled-handshake shutdown regression tests.
@@ -29,6 +73,19 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Pin Fiber Uptime to merged PR #2535 commit `e811012f822675810017efdf00823849f97f2323`
+  and its necessary dependency versions; see the upstream contract.
+- Reject Redis retention above 106750 days during offline config validation,
+  matching upstream's TTL bound without limiting bbolt retention.
+
+- P5.5: omitted `server.address` now defaults to `127.0.0.1:18580`; explicitly
+  configure `:18580` for access beyond loopback. Explicit addresses keep their behavior.
+- Complete user-facing LibreCosta Uptime branding and rename the unimplemented
+  Service Archive plan, preserving the original MIT attribution, bbolt format,
+  Schema v1, and Redis `fiber:uptime` prefix.
+- Upgrade Fiber Uptime from v0.2.0 to v0.2.2 and only its required module versions;
+  see the upstream contract for the dependency and behavior review.
+
 - Move the Go module to `github.com/librecosta/uptime`; external users must
   update module requirements and imports from the former DeepFurry path.
 
@@ -42,6 +99,9 @@ All notable changes to this project will be documented in this file.
 - Extended the existing race target/job to include `internal/app`.
 
 ### Fixed
+
+- Standalone bbolt management requires an existing database, enforced during file
+  open by `Config.MustExist`, without changing serve's first-run creation behavior.
 
 - Reject leading zeros in CalendarDays values, preserving canonical positive `Nd` format.
 - Validate endpoint timeout >= 1ms during configuration loading, matching Fiber

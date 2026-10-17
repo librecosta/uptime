@@ -1,0 +1,27 @@
+[Unit]
+Description=LibreCosta Uptime
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=librecosta-uptime
+Group=librecosta-uptime
+WorkingDirectory=/var/lib/librecosta-uptime
+StateDirectory=librecosta-uptime
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/uptime serve --config /etc/librecosta-uptime/uptime.yaml
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

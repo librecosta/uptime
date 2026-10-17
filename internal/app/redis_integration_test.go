@@ -19,8 +19,103 @@ import (
 	"github.com/gofiber/contrib/v3/uptime"
 	fiberredis "github.com/gofiber/storage/redis/v3"
 	"github.com/librecosta/uptime/internal/config"
+	"github.com/librecosta/uptime/internal/service"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestRedisIntegrationServiceStorage(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	prefix := redisIntegrationPrefix(t, redisURL)
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer target.Close()
+	cfg := redisIntegrationConfig(t, redisURL, prefix, "target", target.URL)
+	cfg.Server.Address = target.Listener.Addr().String() // Opening storage must not bind.
+	cfg.Uptime.Retention = 7
+	owner, err := openStorage(cfg.Storage)
+	must(t, err)
+	defer owner.Close()
+	writer, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{
+		Store: owner.redis, StorageKeyPrefix: prefix, RetentionDays: 7,
+	})
+	must(t, err)
+	seedServiceHistory(t, writer, "history", 1)
+	seedServiceHistory(t, writer, "keep", 2)
+	session, err := OpenServiceStorage(context.Background(), cfg)
+	must(t, err)
+	defer session.Close()
+	assertServiceHistory(t, session, "history", true)
+	assertReadOnlyServiceExport(t, session)
+	// Inspect only this test's prefix; production access never knows Redis keys.
+	ctx := context.Background()
+	seedServiceHistory(t, session.store, "session", 3)
+	ttl, err := owner.redisClient.PTTL(ctx, prefix+":service:session").Result()
+	must(t, err)
+	if ttl <= 8*24*time.Hour-5*time.Second || ttl > 8*24*time.Hour {
+		t.Fatalf("configured retention lost: TTL = %v", ttl)
+	}
+	otherCfg := cfg
+	otherRedis := *cfg.Storage.Redis
+	otherRedis.KeyPrefix = redisIntegrationPrefix(t, redisURL)
+	otherCfg.Storage.Redis = &otherRedis
+	other, err := OpenServiceStorage(ctx, otherCfg)
+	must(t, err)
+	defer other.Close()
+	rows, err := other.ListServices(ctx)
+	must(t, err)
+	if len(rows) != 0 {
+		t.Fatal("query crossed configured Redis prefixes")
+	}
+	seedServiceHistory(t, other.store, "history", 1)
+	must(t, service.CheckDetached("history", []string{cfg.Endpoints[0].ID}))
+	must(t, service.Remove(ctx, session, "history"))
+	assertServiceHistory(t, session, "history", false)
+	assertServiceHistory(t, session, "keep", true)
+	assertServiceHistory(t, other, "history", true)
+	if err := service.Remove(ctx, session, "missing"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("unknown service removal: %v", err)
+	}
+	rows, err = session.ListServices(ctx)
+	must(t, err)
+	if len(rows) != 2 || requests.Load() != 0 {
+		t.Fatal("standalone access started monitoring")
+	}
+	// An explicitly empty endpoint set permits retiring the remaining services.
+	for _, id := range []string{"keep", "session"} {
+		must(t, service.CheckDetached(id, []string{}))
+		must(t, service.Remove(ctx, session, id))
+		assertServiceHistory(t, session, id, false)
+	}
+	rows, err = session.ListServices(ctx)
+	must(t, err)
+	if len(rows) != 0 {
+		t.Fatal("last service remains after removal")
+	}
+	assertServiceHistory(t, other, "history", true)
+	t.Log("guarded removal: target history removed, unknown ID rejected, other prefix preserved, last service retired")
+	must(t, session.Close())
+	must(t, session.Close())
+	assertRedisClosed(t, session.resources)
+	must(t, owner.Ping(ctx)) // Closing the session cannot close another owner.
+	_, err = writer.ListServices(ctx)
+	must(t, err)
+	_, err = session.ListServices(ctx)
+	if !errors.Is(err, redis.ErrClosed) {
+		t.Fatal("query after Close did not preserve client error")
+	}
+}
+
+func TestRedisIntegrationServiceStorageStartupFailure(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	u, err := url.Parse(redisURL)
+	must(t, err)
+	u.User = url.UserPassword("missing-"+rand.Text(), "SECRET")
+	cfg := redisIntegrationConfig(t, u.String(), redisIntegrationPrefix(t, redisURL), "target", "http://never-resolves.invalid")
+	session, err := OpenServiceStorage(context.Background(), cfg)
+	if session != nil || err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), u.String()) {
+		t.Fatal("missing or unsafe standalone Redis initialization failure")
+	}
+}
 
 func redisIntegrationURL(t *testing.T) string {
 	t.Helper()

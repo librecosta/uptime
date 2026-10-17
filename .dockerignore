@@ -1,0 +1,16 @@
+# Allow only module metadata, the original license and compiled Go source.
+# Local YAML, .env, data/DBs, TLS keys, .git and distribution artifacts stay out.
+**
+!go.mod
+!go.sum
+!LICENSE
+!cmd/
+!cmd/uptime/
+!cmd/uptime/*.go
+!internal/
+!internal/**/
+!internal/**/*.go
+!storage/
+!storage/bbolt/
+!storage/bbolt/*.go
+**/*_test.go

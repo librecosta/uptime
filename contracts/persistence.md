@@ -3,8 +3,8 @@
 P1 implements these constraints in the public `storage/bbolt` package. P3 supplies
 the same public Store to Fiber Uptime's standalone runtime; Schema v1 is unchanged.
 The bbolt representation and guarantees below apply to that backend. P4 Redis
-persistence uses Uptime v0.2.0's native backend through Fiber Storage Redis;
-DeepFurry does not define Redis keys, serialization, or a Redis Store implementation.
+persistence uses the pinned Uptime native backend through Fiber Storage Redis;
+LibreCosta does not define Redis keys, serialization, or a Redis Store implementation.
 
 ## Backend Selection and Ownership
 
@@ -21,7 +21,28 @@ DeepFurry does not define Redis keys, serialization, or a Redis Store implementa
 - After Uptime workers and HTTP handlers stop, close the Fiber Redis handle then
   its client. Preserve both failures together with primary/shutdown errors.
 
+P6-A standalone sessions reuse those resources without starting the runtime.
+They query through the public Store contract and remove services only on explicit
+request, using bbolt's method or upstream `uptime.RemoveService`. bbolt still
+requires an existing file and exclusive access; Redis sessions can coexist with other clients.
+The caller coordinates deletion with writers and stops operations before Close.
+Each session closes only its own resources, including on initialization failure.
+No cross-call transaction guarantee, implicit cleanup, archive or deletion policy
+is added. Offline configuration rejects Redis retention above 106750 days so its
+`(days + 1) * 24h` expiry fits `time.Duration`; bbolt retains calendar-day semantics.
+
+P6-B2 applies deletion policy above this backend boundary: refuse YAML-active IDs
+before opening storage, require a persisted detached ID, delete once via the session,
+and read back before Close and success output. The public backend APIs remain
+policy-free. Redis read-back cannot prevent other writers from recreating data;
+failed operations or Close do not guarantee that an attempted deletion was rolled back.
+
 ## bbolt Schema v1
+
+LibreCosta branding does not rename the original format marker, change Schema v1,
+or change Redis's default `fiber:uptime` prefix. P6-B1's version 1
+Service Archive format is `librecosta-uptime-service-archive`; it is unrelated to
+the existing bbolt format and does not trigger a data migration.
 
 - Every database has `meta/format = deepfurry-uptime-bbolt` and an eight-byte
   big-endian uint64 `meta/schema_version = 1`, plus services, instances, samples,
@@ -30,6 +51,8 @@ DeepFurry does not define Redis keys, serialization, or a Redis Store implementa
   explicit forward migrations; P1 has no migration from other versions.
 - Only a definitively newly created file may be initialized. Existing empty,
   unrelated, or invalid files are never adopted or repaired.
+- `Config.MustExist` disables file and parent creation on the actual open. Standalone
+  management enables it; default `Open`/`serve` creation and locking remain unchanged.
 - Service `CreatedAt` and instance `StartedAt` remain stable once meaningfully
   set, falling back to incoming `LastSeenAt` when absent. Both-zero registration
   leaves the creation/start field absent so a later upsert can establish it.
@@ -58,7 +81,9 @@ DeepFurry does not define Redis keys, serialization, or a Redis Store implementa
   and instances with both timestamps zero are retained.
 - Removing an endpoint from configuration never implicitly removes its history.
   Service deletion is explicit and atomic across the service's stored entities.
-- Archive export is not database backup.
+- Archive export is not database backup. It reads existing daily rows and current
+  raw summaries through Store queries, without rollup/cleanup or UI truncation.
+  See the [Archive v1 contract](compatibility.md#service-list-and-archive-v1-p6-b1).
 - Storage failures never silently fall back to ephemeral/in-memory persistence.
 - The application opens bbolt before listener/Uptime construction and owns Close.
   Startup open/schema/lock failures are fatal; later operations retain upstream

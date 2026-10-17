@@ -10,6 +10,8 @@ type envLookup func(string) (string, bool)
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// interpolate expands only ${NAME} in the original input. Replacement values are
+// opaque so secrets containing dollar signs cannot trigger recursive expansion.
 func interpolate(value string, lookup envLookup) (string, error) {
 	var out strings.Builder
 	for {
