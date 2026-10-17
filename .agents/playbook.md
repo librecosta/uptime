@@ -45,7 +45,7 @@ GNU Make and Go 1.26 or a supported newer Go are required. CI verifies Go 1.26.x
 and 1.27.x using the same `make check` entry point.
 
 For storage/runtime changes also run `make race`
-(`go test -race ./storage/bbolt/... ./internal/app/...`).
+(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./cmd/uptime/...`).
 It is separate from `make check` and has a dedicated Go 1.27.x Ubuntu CI job.
 The race detector requires a supported platform and C compiler; report local
 limitations rather than claiming an unavailable run passed.
@@ -89,6 +89,7 @@ go run ./cmd/uptime version
 go run ./cmd/uptime config check --config configs/uptime.example.yaml
 go run ./cmd/uptime config check --help
 go run ./cmd/uptime serve --help
+go run ./cmd/uptime service --help
 ```
 
 Do not claim unavailable toolchain or remote CI checks passed locally. P1 tests
@@ -116,6 +117,11 @@ separately from actual Redis integration passes.
 P6-A standalone storage tests use the same Redis group/job and random-prefix
 cleanup. They cover history/removal, retention TTL, isolation and resource
 ownership; regular checks also cover offline bbolt access/locking and safe errors.
+P6-B1 extends that same group with list/export checks through both standalone
+backends. Archive/CLI tests cover UTC/DST, full history, failure cleanup and
+no-replace publication. Verify file publication on Windows and Linux; report a
+platform's unavailable symlink or hard-link support accurately. No extra Redis job
+or container test dependency is needed.
 
 P5 tests generate a CA and SAN certificate in Go and use clients that trust that
 CA. Never bypass verification with InsecureSkipVerify. Cover all four HTTP/HTTPS

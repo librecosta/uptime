@@ -10,7 +10,8 @@ TLS and optional single-user Basic Auth using Fiber's official middleware.
 P5.5 adds loopback defaults, a configured root redirect, LibreCosta branding, and
 Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 P6-A adds internal standalone history access and explicit removal using the
-merged upstream Redis Store API. Service CLI/archive behavior remains unimplemented.
+merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
+CLI removal and its policy remain unimplemented.
 
 ## Start Here
 
@@ -25,6 +26,7 @@ merged upstream Redis Store API. Service CLI/archive behavior remains unimplemen
 - `cmd/uptime`: executable entry point, minimal CLI, behavioral tests.
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
 - `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
+- `internal/service`, `internal/archive`: list status and read-only Archive v1 export.
 - `configs`: official example that validates without external services or secrets.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
 - `.agents`: architectural boundaries and change workflow.
@@ -63,6 +65,12 @@ conflict before changing behavior; do not silently rewrite a contract or design.
   constructing Uptime, then serves only configured endpoints without a self service.
 - The public `storage/bbolt` package must remain independent of `internal/*`.
 - Never delete service history implicitly. Version persistent schema evolution.
+- Service commands use `config.LoadServiceFile`: only explicit `endpoints: []`
+  relaxes normal validation. bbolt maintenance must open an existing database;
+  runtime creation stays unchanged. Derive active/detached solely from YAML IDs.
+- Archive v1 reads the public Store contract, preserves real daily rows and raw
+  sample counts, and uses calendar/DST-aware completed slots. Publish complete
+  JSON with no overwrite; no raw config, credentials or instance metadata.
 - Fiber hooks own runtime lifecycle once the application is running. Storage
   must outlive Uptime background tasks and close after Fiber shutdown.
 - Redis uses Fiber Storage and Uptime's native backend, never a custom Store.

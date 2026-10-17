@@ -44,6 +44,7 @@ func TestRedisIntegrationServiceStorage(t *testing.T) {
 	must(t, err)
 	defer session.Close()
 	assertServiceHistory(t, session, "history", true)
+	assertReadOnlyServiceExport(t, session)
 	// Inspect only this test's prefix; production access never knows Redis keys.
 	ctx := context.Background()
 	seedServiceHistory(t, session.store, "session", 3)

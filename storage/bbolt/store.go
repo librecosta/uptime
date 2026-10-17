@@ -15,10 +15,12 @@ import (
 
 // Config selects the database file and the timeout for acquiring its file lock.
 type Config struct {
-	// Path is required. Missing parent directories are created with mode 0750.
+	// Path is required. Unless MustExist is set, missing parents use mode 0750.
 	Path string
 	// Timeout defaults to five seconds when zero. Negative values are invalid.
 	Timeout time.Duration
+	// MustExist opens only an existing database and never creates files or parents.
+	MustExist bool
 }
 
 // Store persists Uptime state. It is safe for concurrent use and must not be
@@ -45,8 +47,10 @@ func Open(config Config) (*Store, error) {
 	if config.Timeout == 0 {
 		config.Timeout = 5 * time.Second
 	}
-	if err := os.MkdirAll(filepath.Dir(config.Path), 0750); err != nil {
-		return nil, fmt.Errorf("bbolt create parent directory: %w", err)
+	if !config.MustExist {
+		if err := os.MkdirAll(filepath.Dir(config.Path), 0750); err != nil {
+			return nil, fmt.Errorf("bbolt create parent directory: %w", err)
+		}
 	}
 
 	var created os.FileInfo
@@ -56,10 +60,18 @@ func Open(config Config) (*Store, error) {
 		Timeout:        config.Timeout,
 		NoFreelistSync: true,
 		OpenFile: func(path string, flag int, mode os.FileMode) (*os.File, error) {
-			f, err := os.OpenFile(path, flag|os.O_EXCL, mode)
-			isNew := err == nil
-			if errors.Is(err, os.ErrExist) {
+			var f *os.File
+			var err error
+			isNew := false
+			if config.MustExist {
+				// Enforce this on the actual open, not a racy Stat followed by create.
 				f, err = os.OpenFile(path, flag&^os.O_CREATE, mode)
+			} else {
+				f, err = os.OpenFile(path, flag|os.O_EXCL, mode)
+				isNew = err == nil
+				if errors.Is(err, os.ErrExist) {
+					f, err = os.OpenFile(path, flag&^os.O_CREATE, mode)
+				}
 			}
 			if err != nil {
 				return nil, err

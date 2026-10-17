@@ -31,6 +31,8 @@ Commands:
   version       Show version information
   config check  Validate configuration
   serve         Run the uptime service
+  service list  List persisted services and their configuration status
+  service export <id>  Export service history as Archive v1 JSON
 
 Options:
   -h, --help    Show this help
@@ -48,6 +50,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "service" {
+		return serviceCommand(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		return serve(ctx, args[1:], stdout, stderr)
 	}

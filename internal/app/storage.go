@@ -28,9 +28,13 @@ type runtimeStorage struct {
 }
 
 func openStorage(cfg config.StorageConfig) (*runtimeStorage, error) {
+	return openStorageWithExistingBbolt(cfg, false)
+}
+
+func openStorageWithExistingBbolt(cfg config.StorageConfig, mustExist bool) (*runtimeStorage, error) {
 	switch cfg.Type {
 	case config.StorageBbolt:
-		store, err := bbolt.Open(bbolt.Config{Path: cfg.Bbolt.Path})
+		store, err := bbolt.Open(bbolt.Config{Path: cfg.Bbolt.Path, MustExist: mustExist})
 		if err != nil {
 			return nil, err
 		}

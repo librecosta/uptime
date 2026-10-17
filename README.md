@@ -33,7 +33,7 @@ API, a reusable public bbolt backend, optional Redis persistence, optional TLS
 and Basic Auth, health endpoints, and explicit service history export/removal.
 The public bbolt backend, configuration validation, HTTP runtime, built-in status
 page/API, health endpoints, Redis, TLS, and Basic Auth are implemented.
-Service/archive commands remain future work. See the
+Service listing and Archive v1 export are implemented; CLI removal remains future work. See the
 [product/technical design](docs/design/v0.1.0-product-technical-design.md) for
 the intended behavior and boundaries.
 
@@ -59,7 +59,8 @@ P6-A adds internal standalone storage access for history queries and explicit
 service removal, using upstream PR #2535's merged Redis Store API. The dependency
 is temporarily pinned to commit `e811012f822675810017efdf00823849f97f2323` via a
 Go pseudo-version; see the [upstream contract](contracts/upstream.md).
-Service CLI commands, Archive, and deletion policy remain future work.
+P6-B1 adds `service list` and `service export` using that query boundary, with
+maintenance configuration and safe Archive v1 JSON output. CLI deletion remains unimplemented.
 
 ## Validate Configuration
 
@@ -210,10 +211,50 @@ merge, dual-write, migrate, delete old history, or fall back on failure. Shared
 Redis persistence does not provide leader election or distributed scheduling:
 each application instance runs its own probes.
 
+## List and Export Service History
+
+```sh
+uptime service list --config ./uptime.yaml
+uptime service export api-v1 --config ./uptime.yaml --output ./api-v1.json
+```
+
+Both commands default to `./uptime.yaml`; relative paths use the working directory.
+Stop `serve` before opening bbolt for maintenance. Its database must already exist;
+a missing path fails without creating an empty database. Redis permits online
+queries, but separate queries do not form a transactionally consistent snapshot.
+Neither command starts monitoring or changes source history.
+
+The list contains persisted IDs in lexical order, `active`/`detached`, and last-seen
+UTC time (`-` when unknown). Active means the ID is in the loaded YAML endpoints;
+it does not mean online. Detached does not prove that other writers have stopped.
+Maintenance commands allow explicit `endpoints: []` for a configuration with no
+active services. Omitting `endpoints` is still invalid; `serve` and `config check`
+continue to require at least one endpoint. All other validation, including active
+TLS/Auth, remains in effect.
+
+Export accepts active or detached IDs and writes Archive v1 JSON with stored service
+metadata, all retained daily rows (including history beyond the UI window), and
+the current day's raw up-slot count. UTC timestamps and the configured timezone
+are recorded. The current-day expected count is theoretical completed slots,
+accounts for DST, and does not establish that a detached service was monitored.
+Daily rows and current samples are separate sources and should not be added together.
+No request headers, URLs, credentials or instance details are included. This is a
+history export, not a database backup or import format.
+
+Without `--output`, the file is `uptime-service-YYYYMMDDTHHMMSSZ.json` in the working
+directory. Existing files and symlinks are never replaced. The output directory
+must exist and support hard links: a complete, synced temporary file is published
+atomically, or the operation fails safely. New files use mode 0600 where supported;
+Windows access follows the directory's ACL. See the [Archive v1 contract](contracts/compatibility.md#service-list-and-archive-v1-p6-b1)
+for the stable fields and time rules. Help uses no configuration or storage;
+success returns 0, usage errors 2, and operational failures 1. There is no CLI
+removal command or overwrite option in this phase.
+
 ## Public bbolt Package
 
 Use `Open(Config{Path: "./data/uptime.db"})` from the public package to obtain a
 ready `*Store`. `Path` is required; a zero lock timeout defaults to five seconds.
+Set `Config.MustExist` for access that must never create a database or parent directory.
 Callers own the Store and call `Close` after all users have stopped. The backend
 also provides `Name`, `Ping`, and atomic `RemoveService`.
 
@@ -227,7 +268,8 @@ for schema, cancellation limitations, and cold-backup guidance.
 `cmd/uptime` calls `internal/config` for validation and `internal/app` for serving.
 `storage/bbolt` is independently reusable and imports no project `internal/*`
 package. `internal/app.New` checks capabilities without I/O; its single-use `Run`
-owns listener, Fiber/Uptime, and storage lifetime. Archive work remains unimplemented.
+owns listener, Fiber/Uptime, and storage lifetime. `internal/service` derives list
+status and `internal/archive` builds and safely publishes Archive v1 from Store queries.
 `internal/app.OpenServiceStorage` separately opens bbolt or Redis for history
 queries, explicit removal, and Close, without HTTP or monitoring workers. bbolt
 requires offline access; Redis deletion must be coordinated with active writers.
@@ -245,7 +287,7 @@ make race
 
 `make check` checks formatting, runs `go vet` and tests, and verifies package
 builds without producing a packaged binary. `make race` separately checks the
-storage and runtime packages with the Go race detector and runs in a dedicated Go 1.27.x
+storage, runtime, archive and CLI packages with the Go race detector and runs in a dedicated Go 1.27.x
 Ubuntu CI job. It requires a supported platform and C compiler. Use `make fmt`
 to format repository Go source, excluding ignored caches. The
 [playbook](.agents/playbook.md) documents individual checks and equivalent Go
@@ -268,6 +310,7 @@ go run ./cmd/uptime --help
 go run ./cmd/uptime version
 go run ./cmd/uptime config check --help
 go run ./cmd/uptime serve --help
+go run ./cmd/uptime service --help
 ```
 
 Development version output identifies `dev`, the Go runtime version, and commit

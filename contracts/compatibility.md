@@ -3,11 +3,12 @@
 ## Current Surface
 
 The executable exposes help (`uptime`, `help`, `-h`, `--help`), version
-(`version`, `--version`), `config check [--config PATH]`, and `serve [--config PATH]`.
-Both configuration commands default to `./uptime.yaml` and have `-h`/`--help`.
+(`version`, `--version`), `config check [--config PATH]`, `serve [--config PATH]`,
+`service list [--config PATH]`, and `service export <id> [--config PATH] [--output PATH]`.
+Configuration commands default to `./uptime.yaml` and have `-h`/`--help`.
 There is no global `--config`.
 Bare `config`, unexpected arguments, and unknown commands/options are usage
-errors. Service/archive commands remain unimplemented.
+errors. Bare `service` shows its help. CLI service removal remains unimplemented.
 
 Successful output goes to stdout; diagnostics go to stderr. Help, version, and
 valid configuration return 0; usage errors return 2; invalid/unreadable YAML,
@@ -100,7 +101,7 @@ are not expanded or semantically validated and do not survive normalization.
 | Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
 | UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
-| Endpoint identity | at least one; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
+| Endpoint identity | at least one for serve/config check; maintenance also allows explicit `endpoints: []`; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
 | Endpoint request | literal uppercase GET/HEAD; http/https URL with host, no userinfo/fragment, query allowed |
 | Endpoint timing | interval >= 1s; 1ms <= timeout <= effective endpoint interval |
 | Expected codes | unique 100..599; empty means the upstream 2xx/3xx policy |
@@ -122,6 +123,65 @@ directories, opens/locks bbolt, resolves DNS, connects Redis, probes endpoints,
 binds ports, or constructs Fiber/Uptime. Errors identify fields/categories without
 printing Redis credentials, hashes, header values, secret URL queries, TLS keys,
 or environment values. Do not implement config stringification or dumps.
+
+## Service List and Archive v1 (P6-B1)
+
+`service list/export` use `LoadServiceFile`, which permits only the additional case
+of explicit `endpoints: []`. Omitted or null endpoints remain invalid. All other
+strict/active validation and CWD path rules are unchanged. Help opens no config or
+storage. Options may precede or follow the export ID; `--output` is export-only.
+There is no `--force`, `--yes`, `--online`, or CLI deletion command.
+
+The list contains only persisted services, sorted lexically by ID, with columns
+`ID`, `STATUS`, `LAST SEEN (UTC)`. Status is lowercase `active` iff the ID is in
+current YAML, otherwise `detached`; neither is a liveness or writer-exclusion claim.
+Times are UTC RFC3339, zero is `-`, and an empty store prints only the header.
+IDs containing invalid UTF-8, whitespace or non-printable characters use ASCII escapes.
+
+Archive v1 has these stable JSON fields (no backend-dependent shape):
+
+| Object | Fields |
+| --- | --- |
+| Root | `format` = `librecosta-uptime-service-archive`, integer `version` = 1, `application_version` from the CLI build, `exported_at`, `timezone`, `service`, `daily`, `current_day` |
+| `service` | string `id`, `name`, `description`, `sample_interval`; UTC RFC3339 `created_at`/`last_seen_at` omitted only when zero |
+| `daily[]` | local date `day`, integer `up_slots`/`expected_slots`, boolean `finalized` |
+| `current_day` | local date `day`, integer `up_slots`/`expected_slots_so_far` |
+
+Export time is injected and formatted UTC RFC3339; the timezone is the normalized
+configuration's location name. An empty description stays `""`; empty daily history
+is `[]`. Persisted sample intervals >=1s win; otherwise use the global YAML interval,
+rendered as a Go duration string. Existence is checked before history queries.
+Daily queries select one ID with no bounds, preserve all real counts/finality
+(including any daily row for today), sort ascending by day, and never fill missing
+dates or run maintenance. Today's raw up count is zero if absent and never clamped.
+
+Expected current-day slots are theoretical: from local midnight to the start of
+the current slot, subtract the floor-aligned slot of max(midnight, CreatedAt),
+clamped at zero. Use actual elapsed duration and calendar next-midnight (`AddDate`)
+for DST; future creation gives zero. LastSeenAt does not reduce this count. Daily
+rows and current raw samples are distinct sources, not additive history. There is
+no cross-query Redis snapshot guarantee or import/restore facility.
+
+Only whitelisted service/history fields are serialized: no configuration, endpoint
+URLs, headers, auth/TLS data, Redis URLs, raw slot IDs or instance/PID/hostname.
+Queries and storage Close finish before success output or publication. Missing
+services, query/close failures and output errors return 1 with safe stderr; usage
+errors return 2; success/help return 0. No success text is emitted on failure.
+
+Default output is `uptime-service-YYYYMMDDTHHMMSSZ.json` in CWD, independent of ID.
+Explicit paths also use CWD. UTF-8 JSON is indented with a trailing newline.
+Write to an owned same-directory 0600 temporary file, Sync, Close, then hard-link
+to the final name without replacement and remove the temporary name. Never create
+parents or replace files/symlinks; unsupported filesystems fail safely. Windows
+permissions follow directory ACLs. A failure after publication may leave a complete
+archive (for example, stdout or temporary-name cleanup failure); it never truncates
+an existing target. No direct-to-final or unconditional rename fallback exists.
+
+bbolt maintenance uses an existing file with an exclusive lock and never creates
+a new file or parent. `Config.MustExist` enforces this at open, avoiding a Stat/create
+race; ordinary `Open` and `serve` still initialize new databases. Stop serve before
+bbolt management; Redis may be queried online. Neither command starts HTTP/probes
+or writes source history, and changing YAML never implicitly deletes history.
 
 ## Standalone Runtime (P3–P5.5)
 

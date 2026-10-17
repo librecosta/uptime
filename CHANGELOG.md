@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- P6-B1: `service list` with YAML-derived active/detached status and UTC times,
+  and `service export` with versioned Archive v1 JSON, complete persisted daily
+  history, DST-aware current-day slots, and atomic no-overwrite file publication.
+- Maintenance configuration accepts explicit `endpoints: []` while serve/config
+  check retain their original validation; all other strict/active rules still apply.
+- CLI/archive regression tests and shared bbolt/Redis list/export coverage.
+
 - P6-A: internal standalone bbolt/Redis history queries, explicit service removal,
   and caller-owned cleanup, without a new CLI, archive format, or monitoring runtime.
 - Standalone storage coverage for locking, history, deletion, cancellation, safe
@@ -64,6 +71,9 @@ All notable changes to this project will be documented in this file.
 - Extended the existing race target/job to include `internal/app`.
 
 ### Fixed
+
+- Standalone bbolt management requires an existing database, enforced during file
+  open by `Config.MustExist`, without changing serve's first-run creation behavior.
 
 - Reject leading zeros in CalendarDays values, preserving canonical positive `Nd` format.
 - Validate endpoint timeout >= 1ms during configuration loading, matching Fiber

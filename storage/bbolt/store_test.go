@@ -18,6 +18,48 @@ import (
 
 var testTime = time.Date(2026, 9, 16, 12, 0, 0, 123, time.UTC)
 
+func TestOpenMustExist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing", "uptime.db")
+	if s, err := Open(Config{Path: path, MustExist: true}); s != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing database: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("MustExist created a parent directory")
+	}
+	path = filepath.Join(dir, "uptime.db")
+	if s, err := Open(Config{Path: path, MustExist: true}); s != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("MustExist created a file")
+	}
+	for _, invalid := range [][]byte{nil, []byte("unrelated data")} {
+		must(t, os.WriteFile(path, invalid, 0600))
+		if s, err := Open(Config{Path: path, MustExist: true}); s != nil || err == nil {
+			t.Fatal("adopted invalid file")
+		}
+		data, err := os.ReadFile(path)
+		must(t, err)
+		if !bytes.Equal(data, invalid) {
+			t.Fatal("changed invalid file")
+		}
+	}
+	must(t, os.Remove(path))
+	created, err := Open(Config{Path: path})
+	must(t, err)
+	register(t, created, "existing", 1)
+	must(t, created.Close())
+	reopened, err := Open(Config{Path: path, MustExist: true})
+	must(t, err)
+	defer reopened.Close()
+	rows, err := reopened.ListServices(context.Background())
+	must(t, err)
+	if len(rows) != 1 || rows[0].ID != "existing" {
+		t.Fatal("existing history changed")
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 
 	"github.com/gofiber/contrib/v3/uptime"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	"github.com/librecosta/uptime/internal/config"
+	bolt "go.etcd.io/bbolt"
 )
 
 // ServiceStorage provides standalone history access without an HTTP server or
@@ -17,8 +19,8 @@ type ServiceStorage struct {
 	resources *runtimeStorage
 }
 
-// OpenServiceStorage accepts normalized configuration from config.LoadFile and
-// opens only its selected storage. bbolt requires exclusive file access; Redis
+// OpenServiceStorage accepts normalized configuration and opens only its selected
+// storage. bbolt requires an existing database and exclusive file access; Redis
 // initialization uses the caller's context with a five-second upper bound.
 // Context cancellation cannot forcibly interrupt all underlying disk/network I/O.
 // The caller owns the result and must Close it after all operations have stopped.
@@ -26,8 +28,14 @@ func OpenServiceStorage(ctx context.Context, cfg config.Config) (*ServiceStorage
 	if err := ctx.Err(); err != nil {
 		return nil, safeError("cannot open service storage", err)
 	}
-	resources, err := openStorage(cfg.Storage)
+	resources, err := openStorageWithExistingBbolt(cfg.Storage, true)
 	if err != nil {
+		if cfg.Storage.Type == config.StorageBbolt && errors.Is(err, os.ErrNotExist) {
+			return nil, safeError("cannot open service storage: an existing bbolt database is required", err)
+		}
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, safeError("cannot open service storage: bbolt database is locked; stop serve before maintenance", err)
+		}
 		return nil, safeError("cannot open service storage", err)
 	}
 	return newServiceStorage(ctx, cfg.Uptime.Retention, resources)

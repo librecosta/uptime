@@ -6,9 +6,11 @@ help/version. P3 adds `internal/app` and `serve`: bbolt, plain HTTP, upstream
 endpoint probing, built-in dashboard/API, health, and shutdown. The diagram shows
 the implemented composition. P4 adds optional upstream Redis persistence; P5 adds
 static native TLS and single-user Basic Auth. P5.5 adds loopback defaults, a root
-redirect, LibreCosta branding, and Uptime v0.2.2. Archive remains future work.
+redirect, LibreCosta branding, and Uptime v0.2.2.
 P6-A pins upstream PR #2535's merge and adds `OpenServiceStorage` for independent
 queries and explicit deletion, without constructing Fiber or monitoring workers.
+P6-B1 wires only list/export into the CLI and freezes Archive v1; deletion policy
+and CLI removal remain future work.
 
 ```text
 cmd/uptime
@@ -34,7 +36,7 @@ internal/config      Fiber runtime
 ```
 
 The CLI loads normalized configuration before constructing the app, which composes
-concrete storage and upstream runtime. Future archive operations use the Store query
+concrete storage and upstream runtime. Archive operations use the Store query
 boundary. The arrows describe responsibilities, not a requirement to wrap every
 upstream API in a new abstraction.
 
@@ -42,10 +44,11 @@ upstream API in a new abstraction.
 
 | Area | Responsibility | Current status |
 | --- | --- | --- |
-| `cmd/uptime` | Executable entry point, signal context and CLI wiring | Help, version, config check, serve |
+| `cmd/uptime` | Executable entry point, signal context and CLI wiring | Help, version, config check, serve, service list/export |
 | `internal/app` | Fiber composition, lifecycle, health, standalone storage sessions | bbolt or Redis, HTTP/HTTPS, optional Basic Auth; internal history access/removal |
 | `internal/config` | Strict YAML, defaults, active environment resolution, validation | Implemented; returns normalized typed config |
-| `internal/archive` | Backend-independent service archive/export | Planned |
+| `internal/service` | Derive active/detached from current YAML IDs | Sorted terminal-safe list |
+| `internal/archive` | Backend-independent service archive/export | Archive v1, completed slots, no-replace JSON publication |
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
 | `contracts` | Stable engineering constraints | Present |
@@ -91,12 +94,19 @@ upstream API in a new abstraction.
   a five-second initialization context; deletion uses `uptime.RemoveService`.
   bbolt uses its existing Store and exclusive file lock. Initialization failures
   release acquired resources. Callers stop operations before closing a session.
-  No listener, probe, maintenance task, active/detached policy, or CLI is added;
-  `serve` keeps its existing storage mapping and lifetime.
+  No listener, probe or maintenance task is started. Management requires an
+  existing bbolt file, enforced by `Config.MustExist` on the actual file open;
+  `serve` keeps its existing creation, storage mapping and lifetime.
 - Mapping into Uptime is pure and explicit, cloning headers/status codes. Do not
   set self-service metadata or reparse/default the normalized configuration.
 - Archive logic does not depend on raw bbolt buckets. CLI maintenance commands
   do not manipulate buckets directly.
+- `LoadServiceFile` reuses strict loading and only permits explicit empty endpoints;
+  serve/config check remain unchanged. List derives active/detached from YAML,
+  never from freshness. Export queries one stored service without UI bounds or
+  rollup/cleanup, counts completed slots in calendar time, and omits secrets and
+  instance data. Close storage before output; publish synced JSON via same-directory
+  temporary file and no-replace hard link. No CLI deletion or overwrite option.
 - Runtime persistence goes through explicit persistence boundaries, with no
   hidden fallback to memory when a backend fails.
 - Fiber hooks own Uptime lifecycle. OnListen sets readiness; a shared once-only

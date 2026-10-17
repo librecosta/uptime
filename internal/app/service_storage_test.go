@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +19,9 @@ import (
 	"github.com/gofiber/contrib/v3/uptime"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/librecosta/uptime/internal/archive"
 	"github.com/librecosta/uptime/internal/config"
+	"github.com/librecosta/uptime/internal/service"
 	"github.com/librecosta/uptime/storage/bbolt"
 	bolt "go.etcd.io/bbolt"
 )
@@ -59,6 +64,47 @@ func assertServiceHistory(t *testing.T, session *ServiceStorage, id string, pres
 	}
 }
 
+// Both backends exercise the same Archive/List code through the P6-A session.
+func assertReadOnlyServiceExport(t *testing.T, session *ServiceStorage) {
+	t.Helper()
+	ctx := context.Background()
+	before, err := session.ListServices(ctx)
+	must(t, err)
+	list := service.List(before, []string{"history"})
+	if strings.Count(list, " active ") != 1 || !strings.Contains(list, "detached") {
+		t.Fatalf("incorrect stored configuration status: %q", list)
+	}
+	options := archive.Options{ID: "history", ApplicationVersion: "test", Now: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC), Timezone: time.UTC, Interval: time.Second}
+	document, err := archive.Build(ctx, session, options)
+	must(t, err)
+	if document.Service.ID != "history" || document.Service.SampleInterval != "1m0s" || len(document.Daily) != 1 || document.Daily[0].Day != "2026-10-15" || document.Daily[0].UpSlots != 1 || document.Daily[0].ExpectedSlots != 1440 || !document.Daily[0].Finalized || document.CurrentDay.Day != "2026-10-16" || document.CurrentDay.UpSlots != 1 {
+		t.Fatalf("archive lost stored history: %+v", document)
+	}
+	path := filepath.Join(t.TempDir(), "archive.json")
+	must(t, archive.WriteFile(path, document))
+	data, err := os.ReadFile(path)
+	must(t, err)
+	var decoded archive.Archive
+	must(t, json.Unmarshal(data, &decoded))
+	if !reflect.DeepEqual(decoded, document) {
+		t.Fatal("published archive changed")
+	}
+	after, err := session.ListServices(ctx)
+	must(t, err)
+	slices.SortFunc(before, func(a, b uptimestorage.Service) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(after, func(a, b uptimestorage.Service) int { return strings.Compare(a.ID, b.ID) })
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("read-only commands changed services")
+	}
+	assertServiceHistory(t, session, "history", true)
+	assertServiceHistory(t, session, "keep", true)
+	options.ID = "absent"
+	if _, err := archive.Build(ctx, session, options); !errors.Is(err, archive.ErrServiceNotFound) {
+		t.Fatalf("unknown export: %v", err)
+	}
+	t.Log("standalone list/export: persisted history, current samples, output and read-only behavior verified")
+}
+
 func TestServiceStorageBbolt(t *testing.T) {
 	var requests atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
@@ -75,6 +121,7 @@ func TestServiceStorageBbolt(t *testing.T) {
 	must(t, err)
 	t.Cleanup(func() { must(t, session.Close()) })
 	assertServiceHistory(t, session, "history", true)
+	assertReadOnlyServiceExport(t, session)
 	must(t, session.RemoveService(context.Background(), "history"))
 	assertServiceHistory(t, session, "history", false)
 	assertServiceHistory(t, session, "keep", true)
@@ -102,7 +149,7 @@ func TestServiceStorageBboltLock(t *testing.T) {
 	defer owner.Close()
 	seedServiceHistory(t, owner, "locked", 1)
 	session, err := OpenServiceStorage(context.Background(), cfg)
-	if session != nil || !errors.Is(err, bolt.ErrTimeout) {
+	if session != nil || !errors.Is(err, bolt.ErrTimeout) || !strings.Contains(err.Error(), "stop serve") {
 		t.Fatalf("file lock was bypassed: %v", err)
 	}
 	must(t, owner.Close())
@@ -142,6 +189,24 @@ func TestServiceStorageOpenFailure(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatal("existing invalid file changed")
 	}
+}
+
+func TestServiceStorageRequiresExistingBbolt(t *testing.T) {
+	cfg := testConfig(t, "http://never-resolves.invalid")
+	session, err := OpenServiceStorage(context.Background(), cfg)
+	if session != nil || !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "existing bbolt database") {
+		t.Fatalf("missing database: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(cfg.Storage.Bbolt.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("maintenance created a directory or database")
+	}
+	// Runtime open still creates a fresh database on first use.
+	resources, err := openStorage(cfg.Storage)
+	must(t, err)
+	must(t, resources.Close())
+	session, err = OpenServiceStorage(context.Background(), cfg)
+	must(t, err)
+	must(t, session.Close())
 }
 
 type serviceQueryFailure struct {

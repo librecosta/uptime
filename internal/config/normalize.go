@@ -83,7 +83,7 @@ func (n *normalizer) days(field string, raw *string) CalendarDays {
 	return CalendarDays(days)
 }
 
-func normalize(raw rawConfig, lookup envLookup) (Config, error) {
+func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error) {
 	n := normalizer{lookup: lookup}
 	var cfg Config
 	cfg.Server.Address = n.text("server.address", raw.Server.Address, true)
@@ -189,7 +189,7 @@ func normalize(raw rawConfig, lookup envLookup) (Config, error) {
 			n.fail("auth.basic.password_hash", "invalid bcrypt password hash")
 		}
 	}
-	if len(raw.Endpoints) == 0 {
+	if raw.Endpoints == nil || (!maintenance && len(raw.Endpoints) == 0) {
 		n.fail("endpoints", "at least one endpoint is required")
 	}
 	seen := make(map[string]bool)
