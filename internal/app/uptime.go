@@ -10,6 +10,9 @@ import (
 	"github.com/librecosta/uptime/internal/config"
 )
 
+// buildUptimeConfig maps already-normalized settings without I/O or new defaults.
+// Clone request collections to keep upstream use separate from configuration;
+// leave self-service fields unset so only configured endpoints are monitored.
 func buildUptimeConfig(app *fiber.App, store *runtimeStorage, cfg config.Config) uptime.Config {
 	u := uptime.Config{
 		App:            app,
@@ -37,7 +40,7 @@ func buildUptimeConfig(app *fiber.App, store *runtimeStorage, cfg config.Config)
 	return u
 }
 
-// v0.2.0 returns a handler and panics on constructor rejection. Convert that
+// Uptime returns a handler and panics on constructor rejection. Convert that
 // boundary to an operational error; do not intercept runtime degraded storage.
 func newUptime(cfg uptime.Config) (handler fiber.Handler, err error) {
 	defer func() {

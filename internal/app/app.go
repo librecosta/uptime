@@ -1,4 +1,6 @@
-// Package app composes the standalone HTTP service and owns its storage lifetime.
+// Package app composes the Fiber/Uptime runtime and owns its storage lifetime.
+// It also opens standalone storage sessions without listeners or monitoring workers.
+// Both entry points require normalized configuration from package config.
 package app
 
 import (
@@ -16,6 +18,7 @@ import (
 type runtimeStore interface {
 	uptimestorage.Store
 	Ping(context.Context) error
+	RemoveService(context.Context, string) error
 	Close() error
 }
 
@@ -68,6 +71,9 @@ type operationError struct {
 func (e *operationError) Error() string { return e.operation }
 func (e *operationError) Unwrap() error { return e.cause }
 
+// safeError exposes only a fixed operation label: upstream errors may include
+// Redis/endpoint URLs, headers or hashes. Unwrap preserves errors.Is/errors.As;
+// callers must not print the unwrapped cause to user-facing logs or diagnostics.
 func safeError(operation string, cause error) error {
 	if cause == nil {
 		return nil

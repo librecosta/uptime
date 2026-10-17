@@ -12,8 +12,11 @@ import (
 	"github.com/librecosta/uptime/internal/config"
 )
 
-// Run opens storage, binds before constructing Uptime, and blocks until stopped.
+// Run may be called only once. It opens and Pings storage, then binds the listener
+// before constructing Uptime, whose constructor starts workers. It blocks until
+// serving stops and closes storage only after workers and HTTP handlers finish.
 // Cancellation is successful only when shutdown and resource cleanup succeed.
+// An already-canceled context returns nil without I/O and still consumes the run.
 func (s *Server) Run(ctx context.Context) (result error) {
 	if !s.started.CompareAndSwap(false, true) {
 		return errors.New("server has already been run")
@@ -62,9 +65,15 @@ func (s *Server) Run(ctx context.Context) (result error) {
 		// force-closed and drained before releasing persistence.
 		serveListener = tls.NewListener(s.listener, buildTLSConfig(s.cfg.Server.TLS))
 	}
-	s.app = fiber.New(fiber.Config{AppName: "DeepFurry Uptime"})
+	s.app = fiber.New(fiber.Config{AppName: "LibreCosta Uptime"})
 	s.app.Use(recoverer.New())
 	s.registerHealth()
+	s.app.Use(func(c fiber.Ctx) error {
+		if c.Path() != "/" || (c.Method() != fiber.MethodGet && c.Method() != fiber.MethodHead) {
+			return c.Next()
+		}
+		return c.Redirect().Status(fiber.StatusFound).To(s.cfg.UI.Path)
+	})
 	s.app.Hooks().OnPreShutdown(func() error { s.ready.Store(false); return nil })
 	// Covers constructor rejection and every subsequent failure path.
 	defer func() { result = errors.Join(result, s.shutdown()) }()
@@ -82,7 +91,7 @@ func (s *Server) Run(ctx context.Context) (result error) {
 	s.app.Use(handler)
 	s.app.Hooks().OnListen(func(fiber.ListenData) error {
 		s.ready.Store(true)
-		log.Info("Uptime listening")
+		log.Info(startupMessage(s.listener.Addr().String(), s.cfg.UI.Path, s.cfg.Server.TLS != nil))
 		return nil
 	})
 
@@ -116,7 +125,7 @@ func (s *Server) Run(ctx context.Context) (result error) {
 	}
 	// The deferred shutdown returns this same error once, alongside Close errors.
 	if result == nil && shutdownErr == nil {
-		log.Info("Uptime HTTP server stopped")
+		log.Info("LibreCosta Uptime server stopped")
 	}
 	return result
 }
@@ -128,6 +137,8 @@ func (s *Server) shutdown() error {
 		if err != nil {
 			// fasthttp can return a deadline while handlers still use the store.
 			// Force connection I/O closed, then drain before releasing storage.
+			// This may outlast the timeout: closing transports cannot interrupt
+			// a handler blocked in arbitrary storage I/O.
 			s.listener.closeConnections()
 			s.listener.drained.Wait()
 		}

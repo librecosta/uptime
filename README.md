@@ -1,268 +1,161 @@
-# Uptime
+# LibreCosta Uptime
 
-A tiny, self-hosted uptime service built around Fiber.
+LibreCosta Uptime is a self-hosted HTTP/HTTPS monitor in a single binary, configured
+with YAML and backed by bbolt by default, so no external database is needed.
 
-One binary, one YAML file, and zero external infrastructure required by default.
+The project is pre-release. There are no official releases or published container
+images yet; use the `develop` branch to try it from source.
 
-> [!NOTE]
-> Uptime is under active development toward v0.1.0. It provides a reusable public
-> bbolt backend, strict YAML validation, and a standalone HTTP monitoring runtime.
-> Optional Redis storage, native static TLS, and single-user Basic Auth are implemented.
+![LibreCosta Uptime dashboard preview](docs/assets/uptime-dashboard.webp)
 
-## Overview
+## Quick Start
 
-LibreCosta Uptime aims to make HTTP service availability and persistent history
-easy to operate in a small standalone product. Fiber Contrib Uptime provides
-the monitoring engine; the product composes its configuration, storage, and
-runtime lifecycle.
-
-## Design Principles
-
-- **Fiber-native:** use the framework and engine's existing capabilities.
-- **Zero infrastructure by default:** embedded bbolt persistence.
-- **One binary:** keep deployment small.
-- **Configuration-driven:** YAML describes the monitored services.
-- **Explicit history lifecycle:** configuration changes never silently delete history.
-- **Small dependency surface:** add dependencies only when implementation needs them.
-- **Predictable operations:** make startup, shutdown, and failure behavior explicit.
-
-## Planned v0.1.0
-
-Planned features include HTTP/HTTPS endpoint monitoring, a status page and JSON
-API, a reusable public bbolt backend, optional Redis persistence, optional TLS
-and Basic Auth, health endpoints, and explicit service history export/removal.
-The public bbolt backend, configuration validation, HTTP runtime, built-in status
-page/API, health endpoints, Redis, TLS, and Basic Auth are implemented.
-Service/archive commands remain future work. See the
-[product/technical design](docs/design/v0.1.0-product-technical-design.md) for
-the intended behavior and boundaries.
-
-## Current Development Status
-
-P1 adds `github.com/librecosta/uptime/storage/bbolt`, directly implementing Fiber
-Contrib Uptime v0.2.0's public `storage.Store` contract using bbolt v1.5.0. It
-provides schema-versioned persistence, atomic service-level heartbeat deduplication,
-rollup, queries, cleanup, explicit service removal, and contract tests.
-
-P2 adds normalized configuration and `config check`. No-argument invocation shows
-help; help/version remain available. Unknown commands or unexpected arguments
-return usage errors. Configuration uses stable YAML v3 with no CLI/config framework.
-
-P3 adds `serve`, composing Fiber v3.5.0 and Fiber Uptime v0.2.0 with the public
-bbolt Store. The runtime monitors only configured endpoints, with no self service.
-P4 adds optional Redis persistence through Fiber Storage Redis and Uptime's native
-Redis backend, retaining bbolt as the zero-infrastructure default.
-P5 adds native static TLS and Fiber BasicAuth for the dashboard/API namespace.
-
-## Validate Configuration
-
-The [official example](configs/uptime.example.yaml) validates without environment
-variables, a bbolt file, Redis, or TLS certificates:
+Install Git and **Go 1.26+**, then run these commands from a terminal (Linux,
+macOS, or Windows PowerShell):
 
 ```sh
-go run ./cmd/uptime config check --config configs/uptime.example.yaml
+git clone --branch develop https://github.com/librecosta/uptime.git
+cd uptime
+cp configs/uptime.example.yaml uptime.yaml
 ```
 
-Success prints only `configuration is valid`. With no `--config`, the command
-reads `./uptime.yaml`. The flag belongs to `config check`, not the root command.
-Validation errors go to stderr and return 1; CLI usage errors return 2.
-
-Configuration uses one strict YAML document: unknown fields, duplicate keys,
-wrong types, explicit nulls, and merge keys are rejected. Defaults apply only
-to omitted fields. `${VAR_NAME}` substitution is one-pass and limited to allowed
-active string fields. Inactive TLS/Auth/storage values are neither resolved nor
-semantically validated; their YAML structure still has to be valid.
-
-Config check validates matching TLS certificate/key files only when TLS is enabled.
-Relative paths use the process working directory. It does not create directories,
-open storage, connect Redis, resolve DNS, probe URLs, or bind ports. Auth validation
-requires one NFC-normalized username without colon/control characters and a valid
-bcrypt hash (`$2a$`, `$2b$`, or `$2y$`). Hash validation checks structure and cost
-without comparing a password. Disabled auth values remain ignored.
-No configuration or secret values are dumped. Avoid placing secrets in URLs.
-
-See the [configuration and CLI contract](contracts/compatibility.md) for defaults,
-field rules, and normalization. Description/footer may be omitted for DeepFurry
-defaults but cannot be explicitly empty; an empty favicon URL remains valid.
-
-## Run the Service
-
-Create `./uptime.yaml` using the official example and set your endpoints, then run:
+Edit `uptime.yaml` to set the endpoints you want to monitor. The example monitors
+`https://example.com/` and needs no Redis, TLS, or authentication environment variables.
+Validate the configuration, then start the service:
 
 ```sh
-uptime config check --config ./uptime.yaml
-uptime serve --config ./uptime.yaml
+go run ./cmd/uptime config check --config ./uptime.yaml
+go run ./cmd/uptime serve --config ./uptime.yaml
 ```
 
-From source, use `go run ./cmd/uptime serve --config ./uptime.yaml`.
-`serve` defaults to `./uptime.yaml`; `serve --help` documents its only configuration
-flag. Relative file paths use the process working directory. The default listener
-is `:8080`, and bbolt uses `./data/uptime.db` with exclusive file ownership.
+Open **http://127.0.0.1:18580/** to reach the dashboard. Press **Ctrl+C** to stop.
+History is stored in `./data/uptime.db` and survives restarts. Keep that file when
+upgrading. The default listener accepts connections only from the local machine.
 
-| Route | Behavior |
+## Features
+
+- HTTP/HTTPS endpoint checks with GET or HEAD, custom headers, timeouts, and
+  expected status codes.
+- A status dashboard and JSON API, with current availability and daily history.
+- Configurable retention, dashboard history window, and timezone.
+- Local bbolt persistence or optional Redis storage.
+- Native HTTPS and optional single-user Basic Auth for the dashboard and API.
+- Health endpoints and CLI commands to list services, export history, and remove
+  retired services explicitly.
+
+## Configuration
+
+Start with the commented [example configuration](configs/uptime.example.yaml).
+Run `config check` after editing it and restart `serve` to apply changes.
+Validation does not open the database or start monitoring; enabled TLS certificate
+and key files are checked before startup.
+
+Relative database, TLS, and output paths use the **process working directory**,
+not the YAML file's directory. Keep the same working directory between runs, or
+use absolute paths.
+
+`uptime.interval` is the default probe interval; endpoints can override it.
+`uptime.retention` controls how long history is kept, while `uptime.window`
+controls the dashboard's displayed range. `uptime.timezone` defines calendar-day
+boundaries. The defaults are 10 seconds, 90 days, 30 days, and UTC respectively.
+
+Endpoint IDs are persistent identities. Keep them stable: changing an ID starts
+separate history, and removing an endpoint from YAML does not delete its history.
+
+For all fields and validation rules, see the
+[configuration reference](contracts/compatibility.md#yaml-configuration-p2).
+
+### Storage
+
+| Backend | When to use it |
 | --- | --- |
-| `/livez` | 200 `ok`, without checking storage or targets |
-| `/readyz` | 200 `ready` after listen with a successful one-second-context storage Ping; otherwise 503 `not ready` |
-| `/uptime` | Built-in Fiber Uptime dashboard (configurable `ui.path`) |
-| `/uptime/api/status` | Built-in status API under the same UI path |
+| `bbolt` (default) | A local database file with no external service. One process owns the file at a time. |
+| `redis` | An existing Redis server, with a configured database and key prefix. Each monitor still runs its own probes. |
 
-Health bodies end in a newline and use `text/plain; charset=utf-8` and
-`Cache-Control: no-store`. A DOWN target does not make the monitor unready.
-The root `/` returns 404; it does not redirect to the dashboard.
+To use Redis, set `storage.type` to `redis` and provide `UPTIME_REDIS_URL` for the
+example's `storage.redis.url`. Variables in inactive storage branches are ignored,
+as are TLS/Auth variables while those features are disabled.
+Switching backends does **not** migrate existing history.
 
-Serving supports **bbolt or Redis, HTTP or HTTPS, and optional Basic Auth**.
-Startup storage/schema/lock, preflight Ping, or bind failures are fatal. Later storage operation
-failures retain upstream degraded behavior and do not automatically stop the process.
+### Native TLS and Basic Auth
 
-Ctrl+C or supported SIGTERM requests graceful shutdown: readiness becomes false,
-Fiber stops Uptime workers and HTTP, then the application closes selected storage. Shutdown
-timeout forces remaining connection I/O closed and waits for handlers before
-closing storage; blocked storage I/O cannot be forcibly canceled. Normal shutdown
-returns 0, operational/cleanup failures 1, and CLI usage errors 2.
+Use HTTPS for remote access, either through native TLS or a trusted TLS reverse
+proxy. A proxy on the same host can use the default loopback listener. Set
+`server.address` to `:18580` when the listener must be reachable from outside the
+host or through Docker port publishing, and restrict exposure appropriately.
 
-## Native TLS and Basic Auth
+For native TLS, enable `server.tls.enabled` and supply a matching certificate and
+private key using the example's TLS variables. Connect using a hostname covered
+by the certificate. For Basic Auth, enable `auth.enabled` and supply its username
+and **bcrypt password hash**, never a plaintext password. For non-ASCII passwords,
+hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 
-Add these sections to your configuration alongside storage and endpoints:
+## Service Management
 
-```yaml
-server:
-  address: ":8443"
-  tls:
-    enabled: true
-    cert_file: "./tls/fullchain.pem"
-    key_file: "./tls/privkey.pem"
-auth:
-  enabled: true
-  basic:
-    username: "${UPTIME_AUTH_USERNAME}"
-    password_hash: "${UPTIME_AUTH_PASSWORD_HASH}"
-```
+**Stop `serve` before using any service command with bbolt.** The database must
+already exist. Redis supports online queries, but an export is not a transactional
+snapshot across queries.
 
-TLS uses a static matching cert/key loaded during configuration validation, with
-TLS 1.2 as the minimum. Run uses that loaded keypair without reading the files
-again. Enabling TLS makes the listener HTTPS-only; invalid TLS never falls back
-to HTTP. Certificate replacement requires a restart. ACME, mTLS, hot reload and
-custom TLS tuning are not supported.
-
-Auth is optional and independent of TLS: HTTP/public, HTTP/Auth, HTTPS/public,
-and HTTPS/Auth are supported. It protects the exact `ui.path` and slash descendants
-including the status API. For `/status`, `/status2` and `/status-page` are outside
-the protected namespace. `/livez` and `/readyz` always remain public. The realm is
-fixed to `DeepFurry Uptime`; there is one account and no login page or session.
-
-Set `UPTIME_AUTH_PASSWORD_HASH` to a bcrypt hash, not a plaintext password or SHA
-verifier. Unicode usernames are allowed and normalized to NFC. For non-ASCII
-passwords, generate the bcrypt hash from the NFC-normalized password to match
-Fiber's Basic Auth credential normalization. There is no password-generation CLI.
-
-**Basic Auth does not encrypt credentials.** Direct public HTTP exposure is unsafe;
-use native TLS or a trusted TLS-terminating reverse proxy. HTTP+Auth remains
-available for deployments behind such a proxy.
-
-## Optional Redis Persistence
-
-Replace the storage section in your YAML; keep the remaining endpoint/UI settings:
-
-```yaml
-storage:
-  type: redis
-  redis:
-    url: "${UPTIME_REDIS_URL}"
-    key_prefix: "fiber:uptime"
-```
-
-The URL must use `redis://` or `rediss://`, include a host, have no fragment,
-and pass go-redis URL parsing. Credentials, database paths, and supported query
-parameters are allowed. Config check parses offline and never connects. `rediss://`
-secures the Redis connection independently of native server TLS. The prefix must
-be non-empty, without leading/trailing colon or whitespace or any control character;
-internal colons such as `prod:asia:uptime` are supported. Rules apply after env expansion.
-
-Startup Pings Redis with a five-second timeout before binding HTTP. A canceled
-startup context cleans up normally; connection failure is fatal with a safe error.
-Uptime retains its own initialization Ping and degraded recovery. During a Redis
-outage `/livez` stays 200, `/readyz` becomes 503, and the process stays running.
-Readiness recovers when its one-second Ping succeeds. Shutdown closes the borrowed
-Fiber Redis handle and then the owned go-redis client after workers/HTTP finish.
-
-Switching bbolt and Redis selects another persistence source; it does not copy,
-merge, dual-write, migrate, delete old history, or fall back on failure. Shared
-Redis persistence does not provide leader election or distributed scheduling:
-each application instance runs its own probes.
-
-## Public bbolt Package
-
-Use `Open(Config{Path: "./data/uptime.db"})` from the public package to obtain a
-ready `*Store`. `Path` is required; a zero lock timeout defaults to five seconds.
-Callers own the Store and call `Close` after all users have stopped. The backend
-also provides `Name`, `Ping`, and atomic `RemoveService`.
-
-One Store owns a database file at a time. Existing invalid files are rejected,
-never adopted or repaired. There is no raw DB/bucket API and no active/detached
-product policy in the backend. See the [storage design](docs/design/bbolt-storage.md)
-for schema, cancellation limitations, and cold-backup guidance.
-
-## Architecture
-
-`cmd/uptime` calls `internal/config` for validation and `internal/app` for serving.
-`storage/bbolt` is independently reusable and imports no project `internal/*`
-package. `internal/app.New` checks capabilities without I/O; its single-use `Run`
-owns listener, Fiber/Uptime, and storage lifetime. Archive work remains unimplemented.
-See the [architecture guide](.agents/architecture.md).
-
-## Development
-
-Use Go 1.26 or a supported newer version and GNU Make. CI is configured to run
-the same checks on Go 1.26.x and 1.27.x.
+From the repository root, list services and export an existing ID:
 
 ```sh
-make check
-make race
+go run ./cmd/uptime service list --config ./uptime.yaml
+go run ./cmd/uptime service export website --config ./uptime.yaml --output ./website.json
 ```
 
-`make check` checks formatting, runs `go vet` and tests, and verifies package
-builds without producing a packaged binary. `make race` separately checks the
-storage and runtime packages with the Go race detector and runs in a dedicated Go 1.27.x
-Ubuntu CI job. It requires a supported platform and C compiler. Use `make fmt`
-to format repository Go source, excluding ignored caches. The
-[playbook](.agents/playbook.md) documents individual checks and equivalent Go
-commands when Make is unavailable.
+The list shows persisted IDs, `active` or `detached` configuration status, and
+last-seen times in UTC. Active means present in the current YAML, not necessarily
+online. Export writes Archive v1 JSON containing retained daily history and the
+current day's sample summary. Existing output files are never overwritten; the
+parent directory must exist and support hard links. An export is not a database
+backup, and there is no archive import.
 
-Real Redis tests are opt-in and otherwise skip, so normal checks need no Redis:
+To retire a service, first remove its ID from YAML and stop or update every monitor
+still writing that ID. Then explicitly remove the stored service:
 
 ```sh
-UPTIME_TEST_REDIS_URL=redis://127.0.0.1:6379/15 go test ./internal/app/... -run '^TestRedisIntegration' -count=1
+go run ./cmd/uptime service remove website --config ./uptime.yaml
 ```
 
-Use a disposable test Redis. Tests use unique prefixes and clean only their own
-keys, never reset/flush the database. A separate Go 1.27.x CI job runs these tests
-against official `redis:8.2.1-alpine`; the race job does not start Redis.
+Removal permanently deletes its history, with no confirmation prompt or automatic
+export. IDs still in the current YAML and unknown stored IDs are rejected. Shared
+Redis writers must be coordinated; detached status does not prove they have stopped.
+Maintenance commands accept explicit `endpoints: []` after the last endpoint is
+retired; `serve` and `config check` still require at least one endpoint.
 
-Try the implemented CLI:
+Use `go run ./cmd/uptime --help` for command help and `go run ./cmd/uptime version`
+for build information.
 
-```sh
-go run ./cmd/uptime --help
-go run ./cmd/uptime version
-go run ./cmd/uptime config check --help
-go run ./cmd/uptime serve --help
-```
+## Health Checks
 
-Development version output identifies `dev`, the Go runtime version, and commit
-`unknown`. The package-level version and commit strings allow future linker
-injection; no release packaging workflow exists.
+| Route | Purpose |
+| --- | --- |
+| `/livez` | Reports that the HTTP process is responding. |
+| `/readyz` | Returns 200 when the server is ready and storage responds, otherwise 503. |
 
-## Documentation
+A monitored endpoint being down does not make the monitor unready. Health routes
+remain unauthenticated when Basic Auth is enabled. The default dashboard is at
+`/uptime`, with its JSON API at `/uptime/api/status`; both follow `ui.path`.
 
-- [v0.1.0 Product & Technical Design](docs/design/v0.1.0-product-technical-design.md)
-- [bbolt Storage Design](docs/design/bbolt-storage.md)
-- [Agent Entry Point](AGENTS.md) and [Agent Architecture](.agents/architecture.md)
-- [Engineering Contracts](contracts/): [Compatibility](contracts/compatibility.md),
-  [Persistence](contracts/persistence.md), [Upstream](contracts/upstream.md)
-- [Change Playbook](.agents/playbook.md)
-- [Architecture Decisions](docs/decisions/README.md)
-- [Changelog](CHANGELOG.md)
-- [LibreCosta community files](https://github.com/librecosta/.github)
+## Deployment and Development
+
+- [Docker deployment](docs/deployment/docker.md): build a local Linux amd64/arm64
+  image, mount configuration, and persist data with a non-root container.
+- [systemd deployment](docs/deployment/systemd.md): run on Linux with a dedicated
+  service account, persistent state, and graceful shutdown.
+- [Build local distribution archives](.agents/playbook.md#distribution-preview-p7-a)
+  for Linux, macOS, and Windows, including checksums.
+- [Development workflow](.agents/playbook.md), [architecture](.agents/architecture.md),
+  [engineering contracts](contracts/), and [changelog](CHANGELOG.md).
+
+The deployment guides cover secure exposure, upgrades, and offline bbolt backups.
+
+## Acknowledgments
+
+[**Fiber Contrib Uptime**](https://github.com/gofiber/contrib/tree/main/v3/uptime)
+is the monitoring engine behind LibreCosta Uptime, providing endpoint probes,
+the dashboard, and the status API.
 
 ## License
 
-[MIT](LICENSE), Copyright (c) 2026 DeepFurry.
+[MIT](LICENSE). Copyright (c) 2026 LibreCosta.

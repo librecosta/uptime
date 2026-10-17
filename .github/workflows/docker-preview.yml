@@ -1,0 +1,40 @@
+name: Docker preview
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [pre-master]
+  push:
+    branches: [develop]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - deploy/docker/**
+      - .github/workflows/docker-preview.yml
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PREVIEW_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and inspect both architectures without QEMU or push
+        shell: bash
+        run: |
+          for arch in amd64 arm64; do
+            image="librecosta-uptime:dev-$arch"
+            docker buildx build --platform "linux/$arch" --load \
+              --build-arg VERSION=dev --build-arg COMMIT="$PREVIEW_COMMIT" \
+              --tag "$image" .
+            test "$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{.Config.User}}' "$image")" = "linux/$arch 65532:65532"
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$PREVIEW_COMMIT"
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = dev
+          done
+      - name: Exercise amd64 deployment and persistence
+        run: bash deploy/docker/smoke.sh librecosta-uptime:dev-amd64 "$PREVIEW_COMMIT"

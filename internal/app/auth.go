@@ -23,7 +23,7 @@ func newBasicAuth(cfg config.BasicAuthConfig, uiPath string) (handler fiber.Hand
 	}()
 	return basicauth.New(basicauth.Config{
 		Users: map[string]string{cfg.Username: cfg.PasswordHash},
-		Realm: "DeepFurry Uptime",
+		Realm: "LibreCosta Uptime",
 		Next:  func(c fiber.Ctx) bool { return !isProtectedUIPath(c.Path(), uiPath) },
 	}), nil
 }

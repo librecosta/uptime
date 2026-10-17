@@ -45,7 +45,7 @@ GNU Make and Go 1.26 or a supported newer Go are required. CI verifies Go 1.26.x
 and 1.27.x using the same `make check` entry point.
 
 For storage/runtime changes also run `make race`
-(`go test -race ./storage/bbolt/... ./internal/app/...`).
+(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./cmd/uptime/...`).
 It is separate from `make check` and has a dedicated Go 1.27.x Ubuntu CI job.
 The race detector requires a supported platform and C compiler; report local
 limitations rather than claiming an unavailable run passed.
@@ -89,6 +89,7 @@ go run ./cmd/uptime version
 go run ./cmd/uptime config check --config configs/uptime.example.yaml
 go run ./cmd/uptime config check --help
 go run ./cmd/uptime serve --help
+go run ./cmd/uptime service --help
 ```
 
 Do not claim unavailable toolchain or remote CI checks passed locally. P1 tests
@@ -113,9 +114,139 @@ own keys; never use Reset, FLUSHDB, or FLUSHALL. Tests start from YAML, use real
 Redis with controlled client fault injection, and cover probing, history, isolation,
 startup failure, degraded operation, recovery, and shutdown ownership. Report skips
 separately from actual Redis integration passes.
+P6-A standalone storage tests use the same Redis group/job and random-prefix
+cleanup. They cover history/removal, retention TTL, isolation and resource
+ownership; regular checks also cover offline bbolt access/locking and safe errors.
+P6-B1 extends that same group with list/export checks through both standalone
+backends. Archive/CLI tests cover UTC/DST, full history, failure cleanup and
+no-replace publication. Verify file publication on Windows and Linux; report a
+platform's unavailable symlink or hard-link support accurately. No extra Redis job
+or container test dependency is needed.
+P6-B2 adds CLI checks for refusal before storage open, detached/last-service removal,
+unknown IDs, offline locks, and failure/Close ordering. The same Redis group also
+verifies guarded removal and preservation of other prefixes and services.
 
 P5 tests generate a CA and SAN certificate in Go and use clients that trust that
 CA. Never bypass verification with InsecureSkipVerify. Cover all four HTTP/HTTPS
 and public/Auth combinations, UI namespace boundaries, safe constructor rejection,
 and stalled-handshake shutdown with storage closing after worker/connection drain.
 These tests stay in normal checks and the existing runtime race scope.
+
+## Distribution Preview (P7-A)
+
+Run `make check` once, then from the repository root:
+
+```sh
+go run ./tools/dist --version dev --commit "$(git rev-parse HEAD)" --output dist
+```
+
+PowerShell equivalent:
+
+```powershell
+$sha = git rev-parse HEAD
+go run ./tools/dist --version dev --commit $sha --output dist
+```
+
+The output parent must exist; output must be absent or empty. Choose a new output
+path for another build rather than deleting existing files automatically. The tool
+builds only `./cmd/uptime` with readonly modules, CGO disabled, `-trimpath`,
+`-buildvcs=false`, and explicit linker metadata. It verifies five archives,
+checksums, permissions, Go build metadata and ELF/Mach-O/PE architectures before
+renaming its staging directory into place. Temporary workspace cleanup is attempted
+on failures/cancellation; force-killing a process may leave a `.uptime-dist-*`
+directory, never a complete final output. Do not mistake staging files for artifacts.
+
+```sh
+go run ./tools/dist --verify --version dev --output dist
+```
+
+Verification inspects packages without running binaries. Separately extract the
+host archive into a temporary directory, run `version` (match the supplied version
+and full SHA), `--help`, and `config check --config uptime.example.yaml` there.
+Each archive must contain the binary, example YAML, README, LICENSE, and unchanged
+`docs/assets/uptime-dashboard.webp`; check README's relative image after extraction.
+Config check must not create `data/`. Go omits linker flags from build metadata
+with `-trimpath`, so native execution is the version-injection acceptance check.
+The preview workflow runs manually and on PRs targeting pre-master. It performs
+these steps on Linux amd64 with Go 1.26.x and uploads only a seven-day Actions
+Artifact with read-only repository permissions. Report cross-compiled targets
+separately from native executions and remote CI that has not run. No extra race/Redis run is
+required for packaging-only changes; preserve the existing CI jobs.
+
+## Docker / systemd Deployment (P7-B)
+
+Run `make check` once for repository validation. With a working Linux Docker
+daemon and Buildx, build from the repository root (PowerShell: assign
+`$sha = git rev-parse HEAD` and use `--build-arg "COMMIT=$sha"`):
+
+```sh
+docker buildx build --platform linux/amd64 --load --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" --tag librecosta-uptime:dev-amd64 .
+docker buildx build --platform linux/arm64 --load --build-arg VERSION=dev --build-arg COMMIT="$(git rev-parse HEAD)" --tag librecosta-uptime:dev-arm64 .
+docker image inspect --format '{{.Os}}/{{.Architecture}} {{.Config.User}}' librecosta-uptime:dev-amd64 librecosta-uptime:dev-arm64
+bash deploy/docker/smoke.sh librecosta-uptime:dev-amd64 "$(git rev-parse HEAD)"
+```
+
+Smoke requires Bash, curl, tar and an amd64 Linux Docker host. It checks version,
+help/config, CA roots, runtime contents, missing config, non-root named-volume
+initialization, health/root redirect, graceful stop, detached data after container
+replacement, and read-only storage failure. It traps exit/signals to remove only
+its unique containers, volume and temporary files. Verify cleanup if interrupted;
+never prune unrelated Docker resources. No ARM64 execution or QEMU is required.
+
+The Docker preview workflow runs this same smoke on PRs targeting pre-master,
+manually, or after a develop push touching Docker inputs. It never logs in or
+pushes to a registry. Keep existing Go CI and packaging checks. Do not repeat
+race/Redis for deployment-only changes. If Docker is unavailable, report image/run
+checks unverified, not passed. A newly added
+workflow has not run remotely until a permitted push and Actions run occur.
+
+On a systemd host, follow the installation guide and run `systemd-analyze verify`
+after installing the binary/unit. Report static review separately from an actual
+service start; do not install or change host services merely to make a local check
+pass. Deployment examples must preserve process-CWD paths and offline bbolt locks.
+
+## Stable Release Workflow
+
+`.github/workflows/release.yml` accepts only tag pushes in `librecosta/uptime`;
+it has no manual publishing entry point. A read-only job validates stable SemVer
+(`vMAJOR.MINOR.PATCH`, no leading zeroes or suffixes), dereferences the tag, and
+requires equality with freshly fetched `origin/master` HEAD and the event checkout.
+It builds with Go 1.26.x using `tools/dist`, runs `--verify`, checks SHA256SUMS,
+and smoke-tests the Linux amd64 binary. It rechecks refs before enabling writers.
+
+The image job checks out that exact SHA and uses only `contents: read` and
+`packages: write`. With GITHUB_TOKEN it refuses an existing version manifest;
+only an authenticated registry 404 with a missing-manifest/name error permits
+publication. Authentication/network errors fail. Buildx uses the existing
+Dockerfile for linux/amd64 and linux/arm64, with the validated version/SHA, and
+pushes version and latest tags together; it then checks their digests/platforms.
+Only after that succeeds does the `contents: write` job create a draft with the
+five archives and SHA256SUMS, then publish it after all six uploads succeed.
+The explicit draft preserves partial uploads on failure for review.
+The downloaded checksum file must match
+the read-only build's hash, and every archive must match it before upload.
+Both publishing jobs recheck master and tag refs before publishing commands.
+
+Global release concurrency avoids overlapping latest updates and does not cancel
+an active run. Existing releases (including drafts) fail; assets are never
+clobbered. GitHub Release and GHCR are not an atomic transaction: an image, one
+tag, or a draft/partial release may remain after failure. Inspect the run logs,
+tag SHA, both image digests, Release assets and checksums before deciding how to
+recover. A full rerun stops on existing output; rerunning only a failed job can
+reuse successful prerequisites. Do not delete, replace or roll back published
+output automatically. Concurrent manual publishers are outside this lock and
+must be coordinated; keep master and release tags fixed throughout publication.
+
+For workflow changes, run `make check` once, lint Actions YAML and check shell
+syntax. Exercise tag guards with temporary Git repositories: valid lightweight
+and annotated tags, invalid versions, a tag behind/ahead of master, moved refs,
+and fetch failures. Check that PR previews retain only read permissions and no
+publishing commands. Static checks do not prove a GitHub-hosted run succeeded.
+Reuse unchanged, recorded RC builds instead of rebuilding all five platforms.
+
+Integration PR creation, merges and stable tag pushes require explicit human
+authorization. Before release, retain actual pre-master PR Go/distribution/Docker
+results, complete the separate P8-A2 Windows RC native acceptance, and record
+systemd gaps. Review final README/release notes and the pinned upstream version
+before tagging; this workflow does not waive those gates. After an authorized
+release, verify all six assets, GHCR public visibility and anonymous pulls.

@@ -11,6 +11,8 @@ import (
 
 // UpsertService refreshes display metadata while preserving meaningful CreatedAt
 // and monotonically advancing LastSeenAt. IDs are opaque, non-empty strings.
+// If creation time is not yet set, incoming LastSeenAt supplies the fallback;
+// both timestamps zero leave it unset for a later upsert.
 func (s *Store) UpsertService(ctx context.Context, service uptimestorage.Service) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -123,6 +125,7 @@ func listServices(ctx context.Context, tx *bolt.Tx) ([]uptimestorage.Service, er
 
 // UpsertInstance refreshes the instance association and display metadata while
 // preserving meaningful StartedAt and monotonically advancing LastSeenAt.
+// An unset start time falls back to incoming LastSeenAt, as in UpsertService.
 func (s *Store) UpsertInstance(ctx context.Context, instance uptimestorage.Instance) error {
 	if err := ctx.Err(); err != nil {
 		return err

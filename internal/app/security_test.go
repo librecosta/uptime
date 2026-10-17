@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -26,6 +27,7 @@ import (
 	"github.com/gofiber/contrib/v3/uptime"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/librecosta/uptime/internal/config"
 	"github.com/librecosta/uptime/storage/bbolt"
 	"golang.org/x/crypto/bcrypt"
@@ -96,7 +98,7 @@ func securityRequest(t *testing.T, r *runningServer, path, user, password string
 
 func assertChallenge(t *testing.T, response *http.Response) {
 	t.Helper()
-	if response.StatusCode != 401 || response.Header.Get("WWW-Authenticate") != `Basic realm="DeepFurry Uptime", charset="UTF-8"` || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Vary") != "Authorization" {
+	if response.StatusCode != 401 || response.Header.Get("WWW-Authenticate") != `Basic realm="LibreCosta Uptime", charset="UTF-8"` || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Vary") != "Authorization" {
 		t.Fatalf("unexpected challenge: status=%d headers=%v", response.StatusCode, response.Header)
 	}
 }
@@ -105,13 +107,19 @@ func TestSecurityCombinations(t *testing.T) {
 	for _, useTLS := range []bool{false, true} {
 		for _, useAuth := range []bool{false, true} {
 			t.Run(fmt.Sprintf("tls=%v/auth=%v", useTLS, useAuth), func(t *testing.T) {
+				var logs bytes.Buffer
+				log.SetOutput(&logs)
+				defer log.SetOutput(os.Stderr)
 				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 				defer target.Close()
 				uiPath := "/status"
 				if useTLS && useAuth {
 					uiPath = "/uptime"
+				} else if useTLS {
+					uiPath = "/nested/status"
 				}
 				cfg, client := securityConfig(t, target.URL, uiPath, useTLS, useAuth)
+				cfg.Endpoints[0].Headers = map[string]string{"Authorization": "Bearer PRIVATE-HEADER"}
 				if useTLS && buildTLSConfig(cfg.Server.TLS).MinVersion != tls.VersionTLS12 {
 					t.Fatal("TLS policy changed")
 				}
@@ -120,11 +128,50 @@ func TestSecurityCombinations(t *testing.T) {
 				r := startServerWithClient(t, s, client)
 				r.health(t, "/livez", 200, "ok\n")
 				r.health(t, "/readyz", 200, "ready\n")
-				for _, path := range []string{"/", uiPath + "2", uiPath + "-page", "/random"} {
+				if s.app.Config().AppName != "LibreCosta Uptime" {
+					t.Fatal("incorrect Fiber product name")
+				}
+				for _, method := range []string{http.MethodGet, http.MethodHead} {
+					// Inspect the redirect itself, then follow it with no credentials.
+					noRedirect := *client
+					noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+					req, err := http.NewRequest(method, r.base+"/?token=PRIVATE&next=https://example.invalid", nil)
+					must(t, err)
+					response, err := noRedirect.Do(req)
+					must(t, err)
+					body, err := io.ReadAll(response.Body)
+					response.Body.Close()
+					must(t, err)
+					if response.StatusCode != 302 || response.Header.Get("Location") != uiPath || response.Header.Get("WWW-Authenticate") != "" || (method == http.MethodHead && len(body) != 0) {
+						t.Fatalf("root redirect: %s status=%d location=%q", method, response.StatusCode, response.Header.Get("Location"))
+					}
+					response, err = client.Do(req)
+					must(t, err)
+					response.Body.Close()
+					if response.Request.URL.Path != uiPath || response.Request.URL.RawQuery != "" {
+						t.Fatal("redirect propagated query or reached wrong path")
+					}
+					if useAuth {
+						assertChallenge(t, response)
+					} else if response.StatusCode != 200 {
+						t.Fatal("redirect did not reach public dashboard")
+					}
+				}
+				for _, path := range []string{uiPath + "2", uiPath + "-page", "/random"} {
 					response := securityRequest(t, r, path, "", "")
 					response.Body.Close()
 					if response.StatusCode != 404 || response.Header.Get("WWW-Authenticate") != "" {
 						t.Fatalf("unprotected path %s: %d", path, response.StatusCode)
+					}
+				}
+				for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodPatch} {
+					req, err := http.NewRequest(method, r.base+"/", nil)
+					must(t, err)
+					response, err := client.Do(req)
+					must(t, err)
+					response.Body.Close()
+					if response.StatusCode != 404 || response.Header.Get("Location") != "" {
+						t.Fatalf("unexpected root behavior for %s: %d", method, response.StatusCode)
 					}
 				}
 				for _, path := range []string{uiPath, uiPath + "/api/status", uiPath + "/unknown", uiPath + "/"} {
@@ -180,6 +227,17 @@ func TestSecurityCombinations(t *testing.T) {
 				}
 				r.cancel()
 				must(t, r.wait(t))
+				if !strings.Contains(logs.String(), startupMessage(s.listener.Addr().String(), uiPath, useTLS)) {
+					t.Fatal("successful startup did not log bound address and dashboard entry")
+				}
+				for _, secret := range []string{target.URL, "PRIVATE", securityUser, securityPassword} {
+					if strings.Contains(logs.String(), secret) {
+						t.Fatal("runtime log exposed target URL or credentials")
+					}
+				}
+				if cfg.Auth != nil && (strings.Contains(logs.String(), cfg.Auth.Username) || strings.Contains(logs.String(), cfg.Auth.PasswordHash)) {
+					t.Fatal("runtime log exposed normalized credentials")
+				}
 				if s.ready.Load() {
 					t.Fatal("ready after shutdown")
 				}

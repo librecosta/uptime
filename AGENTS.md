@@ -7,6 +7,14 @@ P1 provides a public bbolt backend; P2 adds strict configuration loading;
 P3 composes Fiber/Uptime into `serve` with bbolt, plain HTTP, health endpoints,
 and graceful shutdown. P4 adds upstream Redis persistence. P5 adds static native
 TLS and optional single-user Basic Auth using Fiber's official middleware.
+P5.5 adds loopback defaults, a configured root redirect, LibreCosta branding, and
+Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
+P6-A adds internal standalone history access and explicit removal using the
+merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
+P6-B2 adds guarded removal of persisted services absent from the current YAML.
+P7-A adds standard-library five-platform packaging and Actions previews;
+P7-B adds Docker/systemd deployment and container previews. The release workflow
+guards stable-tag publication; integration previews never publish releases or images.
 
 ## Start Here
 
@@ -20,14 +28,20 @@ TLS and optional single-user Basic Auth using Fiber's official middleware.
 
 - `cmd/uptime`: executable entry point, minimal CLI, behavioral tests.
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
-- `internal/app`: capability gates, Fiber/Uptime composition, health and lifecycle.
+- `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
+- `internal/service`, `internal/archive`: list/removal policy and read-only Archive v1 export.
 - `configs`: official example that validates without external services or secrets.
+- `tools/dist`: cross-platform build, allowlisted archives, and checksum verification.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
 - `.agents`: architectural boundaries and change workflow.
 - `contracts`: compatibility, persistence, and upstream constraints.
 - `docs/design`: planned v0.1.0 baseline and bbolt design rationale.
 - `docs/decisions`: significant decisions after the baseline.
 - `Makefile`, `.github/workflows/ci.yml`: local verification and CI.
+- `.github/workflows/distribution.yml`: manual and pre-master PR preview artifacts only.
+- `Dockerfile`, `deploy`, `docs/deployment`: non-root Docker and systemd examples.
+- `.github/workflows/docker-preview.yml`: local-image builds and isolated container tests, no push.
+- `.github/workflows/release.yml`: guarded stable-tag Release and GHCR publication.
 
 ## Sources of Truth
 
@@ -59,6 +73,15 @@ conflict before changing behavior; do not silently rewrite a contract or design.
   constructing Uptime, then serves only configured endpoints without a self service.
 - The public `storage/bbolt` package must remain independent of `internal/*`.
 - Never delete service history implicitly. Version persistent schema evolution.
+- Service commands use `config.LoadServiceFile`: only explicit `endpoints: []`
+  relaxes normal validation. bbolt maintenance must open an existing database;
+  runtime creation stays unchanged. Derive active/detached solely from YAML IDs.
+- Before opening storage for removal, reject YAML-active IDs. Require a persisted
+  detached ID, invoke the session's RemoveService once, then read back and Close
+  before success output. No force, automatic export or retry; coordinate Redis writers.
+- Archive v1 reads the public Store contract, preserves real daily rows and raw
+  sample counts, and uses calendar/DST-aware completed slots. Publish complete
+  JSON with no overwrite; no raw config, credentials or instance metadata.
 - Fiber hooks own runtime lifecycle once the application is running. Storage
   must outlive Uptime background tasks and close after Fiber shutdown.
 - Redis uses Fiber Storage and Uptime's native backend, never a custom Store.
@@ -70,6 +93,19 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Preserve MIT `LICENSE`; use [LibreCosta organization community files](https://github.com/librecosta/.github) rather than
   adding local Code of Conduct, Contributing, or Security copies.
 - Do not create empty future packages or advertise unimplemented CLI commands.
+- When adding or changing public APIs or non-obvious engineering invariants, write
+  concise, accurate English GoDoc and comments explaining contracts and reasons,
+  not restating the code.
+- Distribution builds use the fixed module graph, explicit version/full SHA and
+  CGO-free targets. Stage and verify all archives before publishing an output
+  directory; refuse existing nonempty output and never package local config/data.
+- Docker keeps Go 1.26 cross-builds and existing linker metadata, fixed non-root
+  identity and CA roots. Configuration is explicitly mounted; persistent data
+  belongs in an owned named volume or prepared bind mount. Never auto-chown host
+  data, embed credentials, add an anonymous volume or publish preview images.
+- Release writes require a stable tag at the current remote master HEAD, verified
+  archives and one fixed source SHA. Keep validation and previews read-only;
+  never overwrite existing version assets or automatically undo partial publication.
 
 ## Verification
 

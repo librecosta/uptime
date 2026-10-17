@@ -1,0 +1,207 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# Serialize all releases, including updates to latest; never cancel a publication.
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    if: github.repository == 'librecosta/uptime' && github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
+      commit: ${{ steps.guard.outputs.commit }}
+      checksums: ${{ steps.build.outputs.checksums }}
+      artifact: ${{ steps.artifact.outputs.artifact-id }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate stable tag at the current master HEAD
+        id: guard
+        run: |
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || (( ${#VERSION} > 64 )); then
+            echo '::error::Expected a stable vMAJOR.MINOR.PATCH tag.'
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master \
+            "+refs/tags/$VERSION:refs/tags/$VERSION"
+          commit=$(git rev-parse "refs/tags/$VERSION^{commit}")
+          test "$commit" = "$(git rev-parse HEAD)"
+          if [[ "$commit" != "$(git rev-parse refs/remotes/origin/master)" ]]; then
+            echo '::error::Release tag must point exactly to origin/master HEAD.'
+            exit 1
+          fi
+          printf 'version=%s\ncommit=%s\n' "$VERSION" "$commit" >> "$GITHUB_OUTPUT"
+      - name: Refuse an existing release, including drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if grep -Fxq -- "$VERSION" <<< "$tags"; then
+            echo '::error::Release already exists; reconcile it manually before retrying.'
+            exit 1
+          fi
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+      - name: Build, verify and smoke test the release archives
+        id: build
+        env:
+          COMMIT: ${{ steps.guard.outputs.commit }}
+        run: |
+          go run ./tools/dist --version "$VERSION" --commit "$COMMIT" --output dist
+          go run ./tools/dist --verify --version "$VERSION" --commit "$COMMIT" --output dist
+          (cd dist && sha256sum --check SHA256SUMS)
+          printf 'checksums=%s\n' "$(sha256sum dist/SHA256SUMS | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          smoke=$(mktemp -d)
+          trap 'rm -rf "$smoke"' EXIT
+          tar -xzf "dist/librecosta-uptime_${VERSION}_linux_amd64.tar.gz" -C "$smoke"
+          cd "$smoke"
+          version=$(./uptime version)
+          printf '%s\n' "$version"
+          grep -Fx "LibreCosta Uptime $VERSION" <<< "$version"
+          grep -Fx "Commit: $COMMIT" <<< "$version"
+          ./uptime --help
+          test "$(./uptime config check --config uptime.example.yaml)" = 'configuration is valid'
+          test ! -e data
+      - name: Recheck refs before enabling publishing jobs
+        env:
+          COMMIT: ${{ steps.guard.outputs.commit }}
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master \
+            "+refs/tags/$VERSION:refs/tags/$VERSION"
+          test "$(git rev-parse refs/remotes/origin/master)" = "$COMMIT"
+          test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$COMMIT"
+      - uses: actions/upload-artifact@v7
+        id: artifact
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish-image:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      IMAGE: ghcr.io/librecosta/uptime
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Refuse an existing version image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          registry_token=$(curl --fail --silent --show-error --user "$GITHUB_ACTOR:$GH_TOKEN" \
+            'https://ghcr.io/token?service=ghcr.io&scope=repository:librecosta/uptime:pull,push' | jq -er '.token')
+          echo "::add-mask::$registry_token"
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $registry_token" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/librecosta/uptime/manifests/$VERSION")
+          # Only a registry-confirmed missing manifest permits a new version.
+          # Authentication, transport and server errors must fail closed.
+          if [[ "$status" != 404 ]] || ! jq -e \
+            '(.errors | length) > 0 and all(.errors[]; .code == "MANIFEST_UNKNOWN" or .code == "NAME_UNKNOWN")' "$response" > /dev/null; then
+            echo "::error::Version image exists or cannot be checked (HTTP $status); inspect GHCR before retrying."
+            exit 1
+          fi
+      - name: Recheck refs and publish both image tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master \
+            "+refs/tags/$VERSION:refs/tags/$VERSION"
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          test "$(git rev-parse refs/remotes/origin/master)" = "$COMMIT"
+          test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$COMMIT"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" \
+            --tag "$IMAGE:$VERSION" --tag "$IMAGE:latest" \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" .
+          digest=$(jq -er '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")
+          test "$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}')" = "$digest"
+          test "$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')" = "$digest"
+          docker buildx imagetools inspect "$IMAGE@$digest" --raw | jq -e \
+            '[.manifests[].platform | select(.os != "unknown") | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"]'
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  publish-release:
+    needs: [prepare, publish-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact }}
+          path: dist
+          merge-multiple: true
+      - name: Recheck refs, assets and release absence before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKSUMS: ${{ needs.prepare.outputs.checksums }}
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master \
+            "+refs/tags/$VERSION:refs/tags/$VERSION"
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          test "$(git rev-parse refs/remotes/origin/master)" = "$COMMIT"
+          test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$COMMIT"
+          printf '%s  dist/SHA256SUMS\n' "$CHECKSUMS" | sha256sum --check
+          (cd dist && sha256sum --check SHA256SUMS)
+          tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if grep -Fxq -- "$VERSION" <<< "$tags"; then
+            echo '::error::Release already exists; existing assets will not be replaced.'
+            exit 1
+          fi
+          # An explicit draft keeps partial uploads for review if creation fails.
+          # Publish only after all six assets have uploaded; never replace assets.
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --draft --title "LibreCosta Uptime $VERSION" --generate-notes \
+            "dist/librecosta-uptime_${VERSION}_darwin_amd64.tar.gz" \
+            "dist/librecosta-uptime_${VERSION}_darwin_arm64.tar.gz" \
+            "dist/librecosta-uptime_${VERSION}_linux_amd64.tar.gz" \
+            "dist/librecosta-uptime_${VERSION}_linux_arm64.tar.gz" \
+            "dist/librecosta-uptime_${VERSION}_windows_amd64.zip" \
+            dist/SHA256SUMS
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
