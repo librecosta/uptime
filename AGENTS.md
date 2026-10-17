@@ -12,9 +12,9 @@ Fiber Uptime v0.2.2; persistent identities and schema remain unchanged.
 P6-A adds internal standalone history access and explicit removal using the
 merged upstream Redis Store API. P6-B1 adds service list/export and Archive v1;
 P6-B2 adds guarded removal of persisted services absent from the current YAML.
-P7-A adds standard-library five-platform packaging and manual Actions previews;
-P7-B adds Docker/systemd deployment and container previews. Official releases
-remain P8 work.
+P7-A adds standard-library five-platform packaging and Actions previews;
+P7-B adds Docker/systemd deployment and container previews. The release workflow
+guards stable-tag publication; integration previews never publish releases or images.
 
 ## Start Here
 
@@ -38,9 +38,10 @@ remain P8 work.
 - `docs/design`: planned v0.1.0 baseline and bbolt design rationale.
 - `docs/decisions`: significant decisions after the baseline.
 - `Makefile`, `.github/workflows/ci.yml`: local verification and CI.
-- `.github/workflows/distribution.yml`: manual preview artifacts only.
+- `.github/workflows/distribution.yml`: manual and pre-master PR preview artifacts only.
 - `Dockerfile`, `deploy`, `docs/deployment`: non-root Docker and systemd examples.
 - `.github/workflows/docker-preview.yml`: local-image builds and isolated container tests, no push.
+- `.github/workflows/release.yml`: guarded stable-tag Release and GHCR publication.
 
 ## Sources of Truth
 
@@ -102,6 +103,9 @@ conflict before changing behavior; do not silently rewrite a contract or design.
   identity and CA roots. Configuration is explicitly mounted; persistent data
   belongs in an owned named volume or prepared bind mount. Never auto-chown host
   data, embed credentials, add an anonymous volume or publish preview images.
+- Release writes require a stable tag at the current remote master HEAD, verified
+  archives and one fixed source SHA. Keep validation and previews read-only;
+  never overwrite existing version assets or automatically undo partial publication.
 
 ## Verification
 

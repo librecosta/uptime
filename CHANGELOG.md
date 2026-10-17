@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Guarded stable-tag release workflow for five binary archives, checksums and
+  GHCR multi-architecture images from the same master commit; read-only
+  distribution and Docker previews now also run on pre-master PRs.
+
 - P7-B: multi-stage Linux amd64/arm64 Docker previews using Go 1.26 and Distroless
   nonroot with CA roots, an isolated build context, container YAML and persistent
   data ownership; no product defaults or dependencies change.

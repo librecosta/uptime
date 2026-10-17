@@ -58,9 +58,32 @@ set, member permissions and binary architecture without executing downloaded cod
 native version/help/config smoke is a separate acceptance step.
 
 The preview workflow uses Go 1.26.x and only Actions Artifacts, with read-only
-repository permissions. No Tag, Release or deployment publication is implied.
+repository permissions, manually or on PRs targeting pre-master. No Tag, Release
+or deployment publication is implied.
 Unpacking never creates configuration; process-CWD paths and loopback defaults
 remain unchanged. Make's existing build/check semantics remain unchanged.
+
+## Stable Release Publication
+
+Only a stable `vMAJOR.MINOR.PATCH` tag push in `librecosta/uptime` can enter the
+release workflow. A read-only job must verify that the dereferenced tag is
+exactly the current `origin/master` HEAD, not just an ancestor, and fix its full
+SHA before enabling publishing jobs. Prerelease suffixes and leading zeroes are
+rejected. All archives and Docker images use that same version and SHA.
+
+Release assets are exactly the five P7-A archives plus SHA256SUMS, after
+`tools/dist --verify`, checksum checks and Linux amd64 version/help/config smoke.
+GHCR publishes only `ghcr.io/librecosta/uptime:<version>` and `:latest`, pointing
+to the same linux/amd64 + linux/arm64 manifest. The existing Dockerfile, runtime
+identity and OCI source/revision/version labels remain authoritative.
+
+Only the Release job receives `contents: write`; only the image job receives
+`packages: write`. Previews and validation remain read-only. Publication is
+serialized, existing version images/releases are refused, and assets are never
+silently replaced. Images precede Release creation; cross-service atomicity is
+not promised. Failures may leave partial output for manual reconciliation, never
+automatic deletion. The independent Windows RC acceptance and human integration
+approval remain release prerequisites, not consequences of workflow validation.
 
 ## Linux Deployment (P7-B)
 
