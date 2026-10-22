@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.1.1]
+
 ### Security
 
 - Recommend Go 1.26.10 for new builds and pin the Docker builder to
