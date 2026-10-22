@@ -28,6 +28,9 @@ The module is `github.com/librecosta/uptime`; its Go baseline is 1.26. Go suppor
 follows the active Fiber major version's supported window; CI covers 1.26.x and
 1.27.x. Updating that window requires coordinated module, CI, and documentation
 changes.
+The minimum remains `go 1.26.0`; `toolchain go1.26.10` recommends the patched
+compiler without raising the language/module minimum. CI selects the latest
+patch within each supported branch, with floors of 1.26.10 and 1.27.3.
 
 ## Distribution Preview (P7-A)
 
@@ -57,9 +60,9 @@ promise identical bytes across Go versions or machines. `--verify` checks the fu
 set, member permissions and binary architecture without executing downloaded code;
 native version/help/config smoke is a separate acceptance step.
 
-The preview workflow uses Go 1.26.x and only Actions Artifacts, with read-only
-repository permissions, manually or on PRs targeting pre-master. No Tag, Release
-or deployment publication is implied.
+The preview workflow selects the toolchain from go.mod and uploads only Actions
+Artifacts with read-only repository permissions, manually or on PRs targeting
+pre-master. No Tag, Release or deployment publication is implied.
 Unpacking never creates configuration; process-CWD paths and loopback defaults
 remain unchanged. Make's existing build/check semantics remain unchanged.
 
@@ -73,6 +76,7 @@ rejected. All archives and Docker images use that same version and SHA.
 
 Release assets are exactly the five P7-A archives plus SHA256SUMS, after
 `tools/dist --verify`, checksum checks and Linux amd64 version/help/config smoke.
+Release archive builds select the same recommended toolchain from go.mod.
 GHCR publishes only `ghcr.io/librecosta/uptime:<version>` and `:latest`, pointing
 to the same linux/amd64 + linux/arm64 manifest. The existing Dockerfile, runtime
 identity and OCI source/revision/version labels remain authoritative.
@@ -87,9 +91,10 @@ approval remain release prerequisites, not consequences of workflow validation.
 
 ## Linux Deployment (P7-B)
 
-Docker builds only Linux amd64/arm64 with Go 1.26, CGO disabled and the existing
-P7-A version/full-commit linker variables. The runtime is Distroless static Debian
-13 nonroot with CA roots, fixed UID/GID 65532:65532, and process CWD `/data`.
+Docker builds only Linux amd64/arm64 with `golang:1.26.10-bookworm`, CGO disabled
+and the existing P7-A version/full-commit linker variables. The runtime is
+Distroless static Debian 13 nonroot with CA roots, fixed UID/GID 65532:65532,
+and process CWD `/data`.
 It adds only the executable, original MIT license and owned 0700 data directory;
 the build context allowlists module files and product Go source. No configuration,
 private keys, database, toolchain or shell is packaged.

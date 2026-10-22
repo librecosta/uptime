@@ -2,6 +2,8 @@ module github.com/librecosta/uptime
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/gofiber/contrib/v3/uptime v0.2.4-0.20261017105741-e811012f8226
 	github.com/gofiber/fiber/v3 v3.6.1
