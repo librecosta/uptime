@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Recommend Go 1.26.10 for new builds and pin the Docker builder to
+  `golang:1.26.10-bookworm`. Release/distribution builds use the go.mod toolchain;
+  CI retains Go 1.26.x/1.27.x coverage with patched version floors. The minimum
+  Go version remains 1.26.0, and third-party dependencies are unchanged.
+
 ## [v0.1.0]
 
 First stable release: YAML-configured HTTP/HTTPS monitoring, persistent history,

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
