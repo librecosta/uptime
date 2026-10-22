@@ -43,6 +43,16 @@ compilation without packaging a binary. `make fmt` applies Go formatting;
 `make fmt-check`, `make vet`, `make test`, and `make build` run individual checks.
 GNU Make and Go 1.26 or a supported newer Go are required. CI verifies Go 1.26.x
 and 1.27.x using the same `make check` entry point.
+CI requests the latest patch in each branch, with security floors of Go 1.26.10
+and 1.27.3; cached toolchains below those floors must not be selected.
+
+The module keeps `go 1.26.0` as its compatibility minimum and recommends
+`toolchain go1.26.10`. Release/distribution workflows read that toolchain from
+go.mod; keep Docker's pinned builder patch aligned when updating it.
+The toolchain directive does not replace a newer installed Go branch, even if
+that branch lacks its latest security fixes. Use a patched 1.27.x compiler, or
+explicitly select `GOTOOLCHAIN=go1.26.10` for a matching distribution build
+(PowerShell: `$env:GOTOOLCHAIN = 'go1.26.10'`). Check `go version` before building.
 
 For storage/runtime changes also run `make race`
 (`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./cmd/uptime/...`).
@@ -168,8 +178,8 @@ Each archive must contain the binary, example YAML, README, LICENSE, and unchang
 Config check must not create `data/`. Go omits linker flags from build metadata
 with `-trimpath`, so native execution is the version-injection acceptance check.
 The preview workflow runs manually and on PRs targeting pre-master. It performs
-these steps on Linux amd64 with Go 1.26.x and uploads only a seven-day Actions
-Artifact with read-only repository permissions. Report cross-compiled targets
+these steps on Linux amd64 with the go.mod toolchain and uploads only a seven-day
+Actions Artifact with read-only repository permissions. Report cross-compiled targets
 separately from native executions and remote CI that has not run. No extra race/Redis run is
 required for packaging-only changes; preserve the existing CI jobs.
 
@@ -214,8 +224,8 @@ requires equality with freshly fetched `origin/master` HEAD and the event checko
 Before building or enabling publishing jobs, it requires a nonempty
 `docs/releases/<version>.md` in that commit. Every version must provide reviewed
 release notes there; Release creation reads this file instead of generating notes.
-It builds with Go 1.26.x using `tools/dist`, runs `--verify`, checks SHA256SUMS,
-and smoke-tests the Linux amd64 binary. It rechecks refs before enabling writers.
+It builds with the go.mod toolchain using `tools/dist`, runs `--verify`, checks
+SHA256SUMS, and smoke-tests the Linux amd64 binary. It rechecks refs before enabling writers.
 
 The image job checks out that exact SHA and uses only `contents: read` and
 `packages: write`. With GITHUB_TOKEN it refuses an existing version manifest;
