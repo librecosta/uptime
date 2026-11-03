@@ -28,6 +28,21 @@ func NewRedisStore(client *redis.Client, prefix string) (*RedisStore, error) {
 	return &RedisStore{client: client, incidents: base + "incidents", active: base + "active", outbox: base + "outbox"}, nil
 }
 
+// Check validates connectivity and namespace types before runtime handoff. It
+// creates no keys; Apply still checks types under WATCH before every transition.
+func (s *RedisStore) Check(ctx context.Context) error {
+	for _, key := range []string{s.incidents, s.active, s.outbox} {
+		kind, err := s.client.Type(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if kind != "none" && kind != "hash" {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
 func redisIncident(ctx context.Context, client redis.Cmdable, key, id string) (*Incident, error) {
 	data, err := client.HGet(ctx, key, id).Bytes()
 	if errors.Is(err, redis.Nil) {

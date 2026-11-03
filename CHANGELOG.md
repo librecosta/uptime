@@ -7,8 +7,19 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Internal alert state machine, durable incidents and simulated PENDING outbox
-  with independent bbolt/Redis persistence. This B1 core is not yet connected to
-  monitoring, configuration, CLI, or notification delivery.
+  with independent bbolt/Redis persistence, separate from monitoring history.
+
+- Optional `alerts.enabled` and `alerts.consecutive_failures` connect upstream
+  probe results to durable incidents through a bounded ingress and single worker.
+  Sequence gaps reset pending counts; shutdown drains accepted results before
+  closing independent bbolt alert storage or the shared Redis client. No channels
+  or actual notifications are configured or sent.
+
+### Changed
+
+- Pin Fiber Uptime to PR #2604's merged commit
+  `2800b7917d0e3f1b9932718ff6a62277d3b8742d` for its optional probe-result hook,
+  with only required module-graph upgrades; see `contracts/upstream.md`.
 
 ## [v0.1.1]
 

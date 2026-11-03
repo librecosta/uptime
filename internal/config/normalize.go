@@ -152,6 +152,11 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		}
 	}
 
+	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures}
+	if cfg.Alerts.ConsecutiveFailures < 1 || cfg.Alerts.ConsecutiveFailures > 10 {
+		n.fail("alerts.consecutive_failures", "expected an integer from 1 through 10")
+	}
+
 	cfg.UI.Path = n.text("ui.path", raw.UI.Path, true)
 	if !strings.HasPrefix(cfg.UI.Path, "/") || cfg.UI.Path == "/" ||
 		path.Clean(cfg.UI.Path) != cfg.UI.Path || strings.ContainsAny(cfg.UI.Path, "?#\\\r\n") ||

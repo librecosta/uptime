@@ -49,7 +49,7 @@ type Observation struct {
 	Gap        bool
 }
 
-// Policy is supplied explicitly by the caller; B1 has no YAML integration.
+// Policy is supplied explicitly by the caller, without channel credentials.
 type Policy struct {
 	FailureThreshold int // Zero selects three; otherwise 1 through 10.
 	ChannelIDs       []string

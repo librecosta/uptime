@@ -27,7 +27,7 @@ type BboltStore struct {
 
 // OpenBbolt initializes only a file created by this call. Existing empty,
 // foreign, damaged, or unsupported databases are refused without repair.
-// Callers explicitly choose a path (normally ./data/alerts.db); no runtime opens it.
+// Callers explicitly choose a path; the opt-in runtime uses a sibling alerts.db.
 func OpenBbolt(path string, timeout time.Duration) (*BboltStore, error) {
 	if path == "" || timeout < 0 {
 		return nil, ErrInvalid

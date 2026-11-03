@@ -1,8 +1,9 @@
-# Alert Core Contract (v0.2.0-B1)
+# Alert Contract (v0.2.0-B1/B2)
 
-`internal/alerts` is an independent, observation-driven core. B1 does not import
-it into `serve`, configure it in YAML, attach an upstream hook, schedule probes,
-or deliver notifications. Ordinary startup does not create `alerts.db`.
+`internal/alerts` is an independent, observation-driven core. `internal/app`
+optionally feeds it upstream endpoint probe results. Alerts are disabled by
+default: ordinary startup creates neither an alert database nor an alert worker.
+No notification delivery, channel configuration, or management API exists.
 
 ## State and observations
 
@@ -88,16 +89,60 @@ or deliver notifications. Ordinary startup does not create `alerts.db`.
   implicit endpoint deletion, or archival. Future retention must preserve active
   incidents and undelivered tasks, with versioned migrations for schema changes.
 
-## B2 boundary and verification
+## Runtime ingress and lifecycle (B2)
+
+- Optional YAML `alerts.enabled` defaults to false; `consecutive_failures`
+  defaults to three and must be an integer 1 through 10, even when disabled.
+  Config check remains offline and never opens alert persistence. Enabled alerts
+  apply to every configured endpoint with an empty channel snapshot, so incidents
+  are durable but no outbox tasks are created by the runtime.
+- The pinned upstream `OnProbeResult` is the only event source. Its callbacks
+  are ordered per endpoint and concurrent across endpoints. The adapter assigns
+  an endpoint-local sequence before a nonblocking enqueue to a 256-entry channel.
+  It does no storage, network, or logging I/O and starts no probes. Completed
+  results are accepted even if the callback's parent context is already canceled.
+- A full buffer drops the incoming event and counts the loss. One worker emits
+  aggregated, credential-free warnings at most once per five seconds, plus a final
+  pending-loss report on exit. The ingress is not a durable event stream.
+- The worker serializes calls to the existing Engine. Missing sequence numbers
+  cause a Gap before the next real observation, using that observation's exact
+  completion time. Failed store operations do not acknowledge the event; the next
+  observation must pass a Gap again. No failures are accumulated across missing
+  observations, and no store error is converted into DOWN or RECOVERED. The
+  engine retains and reconciles uncertain transitions from earlier real probes.
+  Each observation uses `server.shutdown_timeout` as its storage-operation budget;
+  this supplies a deadline even to client I/O already in flight at shutdown.
+- Enabled bbolt alerts use `alerts.db` beside the selected monitoring file.
+  Identical paths and existing file aliases are rejected, never shared or migrated.
+  Redis alerts borrow the already-owned standalone client, database, and deployment
+  prefix. A read-only startup check rejects incompatible alert key types; transition
+  validation remains transactional. No second client/pool is created for alerts.
+- Alert persistence and the worker are initialized before `uptime.New`, which may
+  begin probing during construction. Alert initialization failures abort startup
+  and release acquired resources. TLS, auth, dashboard, monitoring persistence and
+  readiness retain their existing contracts; alert availability does not redefine
+  `/readyz` or turn target failures into process failures.
+- Shutdown first cancels and joins upstream probes through Fiber's existing hooks,
+  then stops ingress, drains accepted events, joins the worker, and closes alert
+  persistence before monitoring resources. Drain cancellation is independent of
+  probe cancellation and uses `server.shutdown_timeout`; expiry stops further
+  processing and returns a safe timeout error. Uninterruptible storage I/O may
+  exceed that deadline: resources are never closed underneath a running operation.
+  Accepted in-memory events are not guaranteed to survive process termination or
+  an expired drain deadline. Shutdown itself never generates a recovery.
+
+## Boundary and verification
 
 One alert executor is supported. The engine serializes its calls; both stores
 protect concurrent conditional operations, but this is not leader election,
-leases, voting, a probe scheduler, or a delivery guarantee. B2 must provide the
-ordered hook adapter, gap signaling, lifecycle/resource wiring, and validated
-policy/channel ID mapping. Actual channels and delivery semantics remain outside B1.
+leases, voting, a probe scheduler, or a delivery guarantee. Shared Redis writers
+must be coordinated externally. Channel configuration, real delivery, retries,
+routing, and retention scheduling remain outside B2.
 
 `make check` covers deterministic state and real temporary bbolt tests. `make race`
-includes the alert package. Real Redis tests use `UPTIME_TEST_REDIS_URL` and unique
+includes the alert package and runtime adapter. Runtime tests include real local
+HTTP probes, bounded ingress/gaps, store faults/reconciliation, restart and shutdown
+draining. Real Redis tests use `UPTIME_TEST_REDIS_URL` and unique
 owned prefixes, skip explicitly without that variable, and delete only their
 known keys. The existing Redis integration CI job runs them alongside app tests.
 Report skipped Redis checks separately from actual integration passes.

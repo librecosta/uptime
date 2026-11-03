@@ -28,6 +28,10 @@ type rawConfig struct {
 		Window    *string `yaml:"window"`
 		Timezone  *string `yaml:"timezone"`
 	} `yaml:"uptime"`
+	Alerts struct {
+		Enabled             bool `yaml:"enabled"`
+		ConsecutiveFailures *int `yaml:"consecutive_failures"`
+	} `yaml:"alerts"`
 	UI struct {
 		Path        *string `yaml:"path"`
 		Title       *string `yaml:"title"`
@@ -77,6 +81,7 @@ func (r *rawConfig) defaults() {
 	defaultTo(&r.Uptime.Retention, "90d")
 	defaultTo(&r.Uptime.Window, "30d")
 	defaultTo(&r.Uptime.Timezone, "UTC")
+	defaultTo(&r.Alerts.ConsecutiveFailures, 3)
 	defaultTo(&r.UI.Path, "/uptime")
 	defaultTo(&r.UI.Title, "Service Status")
 	defaultTo(&r.UI.Description, "Current service availability.")

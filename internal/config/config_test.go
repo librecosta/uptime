@@ -81,6 +81,9 @@ func wantInvalid(t *testing.T, data []byte, lookup envLookup, field string) {
 
 func TestDefaults(t *testing.T) {
 	cfg := mustLoad(t, []byte(minimal), emptyEnv)
+	if cfg.Alerts.Enabled || cfg.Alerts.ConsecutiveFailures != 3 {
+		t.Fatal("alert defaults")
+	}
 	if cfg.Server.Address != "127.0.0.1:18580" || cfg.Server.ShutdownTimeout != 10*time.Second || cfg.Server.TLS != nil || cfg.Auth != nil {
 		t.Fatal("server/auth defaults")
 	}
@@ -97,6 +100,20 @@ func TestDefaults(t *testing.T) {
 	if e.ID != "web" || e.Name != "web" || e.Description != "" || e.URL.Scheme != "https" || e.URL.Host != "example.invalid" || e.Method != "GET" || e.Interval != 10*time.Second || e.Timeout != 5*time.Second || len(e.Headers) != 0 || len(e.ExpectedStatusCodes) != 0 {
 		t.Fatal("endpoint defaults")
 	}
+}
+
+func TestAlertsConfig(t *testing.T) {
+	for _, threshold := range []int{1, 3, 10} {
+		cfg := mustLoad(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.consecutive_failures": threshold}), emptyEnv)
+		if !cfg.Alerts.Enabled || cfg.Alerts.ConsecutiveFailures != threshold {
+			t.Fatal("alert policy mapping")
+		}
+	}
+	for _, value := range []any{0, -1, 11, 2.5, "3", nil} {
+		wantInvalid(t, configData(t, map[string]any{"alerts.consecutive_failures": value}), emptyEnv, "alerts.consecutive_failures")
+	}
+	wantInvalid(t, []byte(minimal+"alerts: {enabled: 'true'}\n"), emptyEnv, "alerts.enabled")
+	wantInvalid(t, []byte(minimal+"alerts: {channel: SECRET}\n"), emptyEnv, "unknown")
 }
 
 func TestStrictYAML(t *testing.T) {

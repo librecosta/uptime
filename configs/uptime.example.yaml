@@ -43,6 +43,11 @@ uptime:
   # Timezone for calendar-day boundaries in history (UTC or an IANA name).
   timezone: UTC
 
+alerts:
+  # Track incidents for all endpoints; notification delivery is not implemented.
+  enabled: false
+  consecutive_failures: 3 # 1 through 10; one success resolves an incident.
+
 ui:
   path: /uptime
   title: Service Status

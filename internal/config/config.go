@@ -30,6 +30,7 @@ type Config struct {
 	Server    ServerConfig
 	Storage   StorageConfig
 	Uptime    UptimeConfig
+	Alerts    AlertsConfig
 	UI        UIConfig
 	Auth      *BasicAuthConfig // nil disables authentication.
 	Endpoints []EndpointConfig // Current YAML membership, not the persisted service registry.
@@ -75,6 +76,13 @@ type UptimeConfig struct {
 	Retention CalendarDays   // Stored history horizon; Redis additionally limits its expiry duration.
 	Window    CalendarDays   // Dashboard range, no greater than Retention; does not bound exports.
 	Timezone  *time.Location // Calendar-day boundaries, including daylight saving transitions.
+}
+
+// AlertsConfig enables incident tracking for all endpoints, without notification
+// delivery. ConsecutiveFailures is 1 through 10, defaulting to three.
+type AlertsConfig struct {
+	Enabled             bool
+	ConsecutiveFailures int
 }
 
 // UIConfig controls the upstream dashboard and its API namespace.
