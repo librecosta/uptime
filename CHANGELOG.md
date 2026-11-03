@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Internal alert state machine, durable incidents and simulated PENDING outbox
+  with independent bbolt/Redis persistence. This B1 core is not yet connected to
+  monitoring, configuration, CLI, or notification delivery.
+
 ## [v0.1.1]
 
 ### Security

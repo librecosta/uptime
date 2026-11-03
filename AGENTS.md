@@ -30,6 +30,7 @@ guards stable-tag publication; integration previews never publish releases or im
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
 - `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
 - `internal/service`, `internal/archive`: list/removal policy and read-only Archive v1 export.
+- `internal/alerts`: independent B1 incident/outbox core; see [alerts](contracts/alerts.md). No runtime or channel integration yet.
 - `configs`: official example that validates without external services or secrets.
 - `tools/dist`: cross-platform build, allowlisted archives, and checksum verification.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.

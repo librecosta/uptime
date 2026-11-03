@@ -53,6 +53,7 @@ upstream API in a new abstraction.
 | `internal/config` | Strict YAML, defaults, active environment resolution, validation | Implemented; returns normalized typed config |
 | `internal/service` | Derive active/detached from current YAML IDs; guard explicit removal | Sorted terminal-safe list; existence check and one deletion with read-back |
 | `internal/archive` | Backend-independent service archive/export | Archive v1, completed slots, no-replace JSON publication |
+| `internal/alerts` | Observation-driven state machine and independent incident/outbox persistence | B1 core only; not wired into monitoring, YAML, CLI or delivery; see [alert contract](../contracts/alerts.md) |
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
 | `tools/dist` | Five native targets, allowlisted archives and SHA256SUMS | Local builds and manual preview artifacts; no release publication |
