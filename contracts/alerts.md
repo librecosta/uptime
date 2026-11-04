@@ -32,7 +32,7 @@ configuration and a single delivery worker. There is no management API.
   An unreadable store rejects the observation and breaks an unconfirmed sequence;
   it does not invent a failed probe or close a persistent incident.
 
-## Incident and simulated outbox
+## Incidents and outbox
 
 - A confirmed incident has a cryptographically random stable ID, endpoint ID,
   first failure and confirmation timestamps, optional recovery timestamp, and
