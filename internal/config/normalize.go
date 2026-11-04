@@ -155,9 +155,12 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		}
 	}
 
-	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures}
+	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures, RecoverySuccesses: *raw.Alerts.RecoverySuccesses}
 	if cfg.Alerts.ConsecutiveFailures < 1 || cfg.Alerts.ConsecutiveFailures > 10 {
 		n.fail("alerts.consecutive_failures", "expected an integer from 1 through 10")
+	}
+	if cfg.Alerts.RecoverySuccesses < 1 || cfg.Alerts.RecoverySuccesses > 10 {
+		n.fail("alerts.recovery_successes", "expected an integer from 1 through 10")
 	}
 	channelIDs := n.alertChannels(raw, &cfg.Alerts)
 

@@ -1,4 +1,4 @@
-# Alert Contract (v0.2.0-B1/B2/C1/C2/C3)
+# Alert Contract (v0.2.0 and v0.2.1-B1)
 
 `internal/alerts` is an independent, observation-driven core. `internal/app`
 optionally feeds it upstream endpoint probe results. Alerts are disabled by
@@ -11,7 +11,10 @@ configuration and a single delivery worker. There is no management API.
 - HEALTHY -> PENDING on an actual failed observation; the third consecutive
   failure confirms FIRING by default. An explicit threshold must be 1 through 10.
   Threshold one confirms immediately. A successful observation resets PENDING.
-- Only real success closes FIRING and produces RECOVERED. Repeated failures in
+- FIRING closes only after `Policy.RecoverySuccesses` consecutive real successes
+  (zero selects one; explicit 1..10). YAML `alerts.recovery_successes` defaults
+  to one and accepts 1..10. Failures, any Gap and restart reset the in-memory
+  recovery count. Default behavior matches v0.2.0. Repeated failures in
   FIRING and repeated success after recovery create no additional transitions.
 - A Gap is a standalone signal, not a probe. Its success/status fields are
   ignored. It resets unconfirmed failure counts even if its timestamp is old,
@@ -332,6 +335,49 @@ External stop budgets must allow separate shutdown, drain and outcome-recording
 timeouts before storage closure. The deployment examples allow 45s for the default
 10s application timeout; uninterruptible I/O still cannot guarantee a hard bound.
 These in-process alerts cannot detect the monitor's complete process failure.
+
+## Recovery stability and reminder core (v0.2.1-B1)
+
+- Recovery counts are volatile, including while a persistent incident is FIRING.
+  Only reaching the success threshold requests the existing atomic recovery
+  transition; pending/uncertain transition reconciliation remains unchanged.
+- `Incident.ReminderPolicy` freezes a positive interval and maximum count.
+  Nil means disabled; legacy incidents have no schedule and never acquire one
+  implicitly. `ReminderCount` counts issued reminders, not sends. An active,
+  non-exhausted snapshot has `NextReminderAt`; recovery/exhaustion clears it.
+- Pure `PrepareReminder` accepts only a matching real failed observation at or
+  after the saved deadline. Success, Gap, a closed incident and exhausted/disabled
+  policies produce nothing. A long outage produces at most one reminder; the next
+  interval starts at the actual observation completion time, with no catch-up.
+  Each snapshotted channel gets a PENDING task with positive `ReminderSequence`.
+- Reminder EventID is SHA-256 of `IncidentID + NUL + "REMINDER" + NUL + decimal
+  sequence + NUL + ChannelID`, without padding. DOWN/RECOVERED IDs are unchanged;
+  their sequence remains zero. Generic JSON adds `reminder_sequence` only for a
+  reminder, using `occurred_at` as its event time. Feishu adds a sequence line;
+  the original DOWN/RECOVERED payloads are unchanged.
+- Pure `DeliveryReady`/`PrepareDeliveryOutcome` require a consistent incident and
+  same-channel dependency snapshot: DOWN must be SENT, reminder N waits for N-1
+  to become terminal (SENT/FAILED/SKIPPED), and recovery waits for the last issued
+  reminder. Missing/corrupt dependencies reject; failed DOWN cannot authorize a
+  reminder. Existing DOWN-failure recovery skips retain their v0.2.0 rules.
+- `CancelReminder` prepares recovery's cancellation of PENDING reminders,
+  including those with previous attempts. It uses SKIPPED/`incident_recovered`,
+  clears the retry time and preserves Attempts, LastAttemptAt/ID and every receipt.
+  FinishedAt is the later of recovery and the last attempt; no attempt is added.
+  Already terminal tasks are unchanged. This reason cannot be supplied as a send
+  Outcome. B2 must commit cancellation with recovery in the same transaction.
+- A completed send racing cancellation still attempts conditional recording.
+  On conflict, Worker reads the task and closed incident. A valid cancellation
+  with unchanged pre-send count releases its fence without claiming an outcome
+  receipt or overwriting SKIPPED. Unavailable, mismatched or invalid reads retain
+  the same Outcome/AttemptID for reconciliation and never authorize a resend.
+- **B1 does not enable reminder persistence or runtime scheduling.** Schema v1
+  rejects reminder snapshots/transitions/tasks through its shared validation.
+  There is no Reminder YAML, queue, timer, new Redis key/index or schema upgrade.
+  New fields omit zero values, preserving legacy JSON. Engine creates only
+  DOWN/RECOVERED. Adapter reminder sends are exercised only with local/injected
+  transports; B2 must add Schema v2, migration and atomic reminder/cancel writes
+  before wiring the pure core into the live runtime.
 
 ## Boundary and verification
 

@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -627,7 +629,7 @@ func TestAlertEndpointPolicies(t *testing.T) {
 	store := testAlertBbolt(t)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body); w.WriteHeader(204) }))
 	defer webhook.Close()
-	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}, Alerts: config.AlertsConfig{Enabled: true, ConsecutiveFailures: 1}}
+	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}, Alerts: config.AlertsConfig{Enabled: true, ConsecutiveFailures: 1, RecoverySuccesses: 3}}
 	for _, id := range []string{"a", "b"} {
 		cfg.Alerts.Channels = append(cfg.Alerts.Channels, config.AlertChannelConfig{ID: id, Type: "webhook", Webhook: &notify.WebhookConfig{URL: webhook.URL}})
 	}
@@ -639,6 +641,10 @@ func TestAlertEndpointPolicies(t *testing.T) {
 		wg.Go(func() { r.hook(t.Context(), alertProbe(e.ID, 1, false)) })
 	}
 	wg.Wait()
+	for _, e := range cfg.Endpoints {
+		r.hook(t.Context(), alertProbe(e.ID, 2, true))
+		r.hook(t.Context(), alertProbe(e.ID, 3, true))
+	}
 	must(t, r.stop(time.Second))
 	for _, e := range cfg.Endpoints {
 		i, err := store.Active(t.Context(), e.ID)
@@ -646,6 +652,114 @@ func TestAlertEndpointPolicies(t *testing.T) {
 		if i == nil || strings.Join(i.ChannelIDs, ",") != strings.Join(e.AlertChannels, ",") {
 			t.Fatal("endpoint policy changed channel snapshot")
 		}
+	}
+}
+
+// This fixture models B2's atomic recovery cancellation without inserting any
+// future reminder record into a real Schema v1 backend.
+type reminderCancelStore struct {
+	alerts.Store
+	mu                     sync.Mutex
+	incident               alerts.Incident
+	task                   alerts.Task
+	readTask, readIncident bool
+	outcomes               []alerts.Outcome
+}
+
+func (s *reminderCancelStore) Get(context.Context, string) (*alerts.Incident, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readIncident {
+		return nil, errors.New("unavailable")
+	}
+	i := s.incident
+	return &i, nil
+}
+func (s *reminderCancelStore) GetTask(context.Context, string) (*alerts.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readTask {
+		return nil, errors.New("unavailable")
+	}
+	task := s.task
+	return &task, nil
+}
+func (s *reminderCancelStore) QueryDue(context.Context, alerts.DueQuery) (alerts.TaskPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return alerts.TaskPage{Tasks: []alerts.Task{s.task}}, nil
+}
+func (s *reminderCancelStore) RecordOutcome(_ context.Context, o alerts.Outcome) (alerts.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, o)
+	return alerts.Task{}, alerts.ErrConflict
+}
+
+func TestDeliveryReminderCanceledDuringSend(t *testing.T) {
+	for _, fault := range []string{"none", "task-read", "incident-read"} {
+		t.Run(fault, func(t *testing.T) {
+			i := alerts.Incident{ID: "canceled", EndpointID: "api", FirstFailureAt: deliveryTime.Add(-3 * time.Hour), ConfirmedAt: deliveryTime.Add(-2 * time.Hour), ChannelIDs: []string{"ops"}, ReminderPolicy: &alerts.ReminderPolicy{Interval: time.Hour, MaxReminders: 2}, NextReminderAt: deliveryTime.Add(-time.Hour)}
+			sum := sha256.Sum256([]byte(i.ID + "\x00DOWN\x00ops"))
+			down := alerts.Task{EventID: hex.EncodeToString(sum[:]), IncidentID: i.ID, ChannelID: "ops", Type: alerts.Down, OccurredAt: i.ConfirmedAt, Status: alerts.TaskPending}
+			down, _, err := alerts.PrepareDeliveryOutcome(down, i, nil, nil, alerts.Outcome{EventID: down.EventID, AttemptID: "down", AttemptedAt: i.ConfirmedAt, Status: alerts.TaskSent})
+			must(t, err)
+			i, tasks, err := alerts.PrepareReminder(i, alerts.Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt})
+			must(t, err)
+			old := alerts.Outcome{EventID: tasks[0].EventID, AttemptID: "prior", AttemptedAt: tasks[0].OccurredAt, Status: alerts.TaskPending, ErrorCode: alerts.ErrorUnavailable}
+			pending, _, err := alerts.PrepareDeliveryOutcome(tasks[0], i, &down, nil, old)
+			must(t, err)
+			store := &reminderCancelStore{incident: i, task: pending}
+			d := workerForTest(t, store)
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			d.senders["ops"] = deliverySender(func(context.Context, notify.Message) (notify.Result, error) {
+				calls.Add(1)
+				close(entered)
+				<-release
+				return notify.Result{Status: alerts.TaskSent, AttemptedAt: deliveryTime}, nil
+			})
+			go func() { defer close(done); d.scan(t.Context()) }()
+			<-entered
+			store.mu.Lock()
+			store.incident.RecoveredAt = deliveryTime.Add(-time.Second)
+			store.incident.NextReminderAt = time.Time{}
+			store.task, err = alerts.CancelReminder(store.task, store.incident)
+			store.readTask, store.readIncident = fault == "task-read", fault == "incident-read"
+			store.mu.Unlock()
+			must(t, err)
+			close(release)
+			<-done
+			if fault != "none" {
+				if d.pending == nil {
+					t.Fatal("unknown state released reconciliation fence")
+				}
+				d.scan(t.Context())
+				if calls.Load() != 1 || d.pending == nil {
+					t.Fatal("unknown result permitted resend")
+				}
+				store.mu.Lock()
+				store.readTask, store.readIncident = false, false
+				store.mu.Unlock()
+				d.scan(t.Context())
+			}
+			if d.pending != nil || calls.Load() != 1 {
+				t.Fatal("legal cancellation blocked or repeated send")
+			}
+			if store.task.Status != alerts.TaskSkipped || store.task.Attempts != 1 || store.task.LastAttemptID != "prior" {
+				t.Fatal("late send overwrote cancellation/history")
+			}
+			matched, err := store.task.HasOutcome(old)
+			must(t, err)
+			if !matched {
+				t.Fatal("prior receipt lost")
+			}
+			for _, o := range store.outcomes {
+				if o != store.outcomes[0] {
+					t.Fatal("reconciliation changed attempt identity")
+				}
+			}
+		})
 	}
 }
 

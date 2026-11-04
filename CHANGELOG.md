@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Configurable consecutive recovery successes (1–10, default one), with volatile
+  counts reset by failure, observation gaps and restart.
+- v0.2.1-B1 reminder core: deterministic per-sequence identity, pure generation,
+  dependency and recovery-cancellation rules, adapter payloads and in-flight
+  outcome reconciliation. Schema v1 rejects reminder snapshots/tasks; reminder
+  YAML, scheduling, persistence transactions and migration remain for B2.
+
 - Optional DOWN/RECOVERED alerts for HTTP/HTTPS endpoints, disabled by default,
   with configurable consecutive failures (1–10, default three) and recovery on
   a successful probe. Bounded ingress detects gaps without inventing failures.

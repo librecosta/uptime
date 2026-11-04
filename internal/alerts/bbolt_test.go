@@ -92,6 +92,42 @@ func TestBboltRefusesForeignSchema(t *testing.T) {
 	}
 }
 
+func TestV1RefusesReminderPersistence(t *testing.T) {
+	s := testBbolt(t)
+	i := reminderFixture()
+	if _, err := s.Apply(t.Context(), Transition{Type: Down, Incident: i}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("v1 accepted reminder snapshot")
+	}
+	i, tasks, err := PrepareReminder(i, Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt})
+	must(t, err)
+	if _, err := s.Apply(t.Context(), Transition{Type: Reminder, Incident: i}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("v1 accepted reminder transition")
+	}
+	box, err := s.Outbox(t.Context())
+	must(t, err)
+	if len(box) != 0 {
+		t.Fatal("rejected reminder mutated outbox")
+	}
+	data, err := json.Marshal(tasks[0])
+	must(t, err)
+	if _, err := decodeTask(data); !errors.Is(err, ErrInvalid) {
+		t.Fatal("v1 decoded future reminder task")
+	}
+	data, err = json.Marshal(i)
+	must(t, err)
+	if _, err := decodeIncident(data); !errors.Is(err, ErrInvalid) {
+		t.Fatal("v1 decoded future incident snapshot")
+	}
+	legacy := testIncident("legacy", "legacy")
+	data, err = json.Marshal(legacy)
+	must(t, err)
+	if bytes.Contains(data, []byte("reminder")) {
+		t.Fatal("legacy JSON gained reminder fields")
+	}
+	_, err = s.Apply(t.Context(), Transition{Type: Down, Incident: legacy})
+	must(t, err)
+}
+
 func TestBboltAtomicRollback(t *testing.T) {
 	t.Parallel()
 	s := testBbolt(t)

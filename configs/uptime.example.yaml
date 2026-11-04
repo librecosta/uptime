@@ -47,7 +47,8 @@ alerts:
   # Optional incident tracking and notifications; channel variables are ignored
   # while disabled. Use only one alert executor per database/Redis prefix.
   enabled: false
-  consecutive_failures: 3 # 1 through 10; one success resolves an incident.
+  consecutive_failures: 3 # 1 through 10; confirms an incident.
+  recovery_successes: 1 # 1 through 10; consecutive successes needed to resolve it.
   channels: []
   # Replace [] with channels as needed; keep IDs stable for incident snapshots.
   # channels:

@@ -2,11 +2,15 @@ package alerts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -40,7 +44,7 @@ func TestMachine(t *testing.T) {
 			m := machine{}
 			for n := 1; n <= threshold; n++ {
 				var event EventType
-				m, event = advance(m, Observation{CheckedAt: testTime.Add(time.Duration(n) * time.Second)}, threshold)
+				m, event = advance(m, Observation{CheckedAt: testTime.Add(time.Duration(n) * time.Second)}, threshold, 1)
 				if n < threshold && (m.state != Pending || event != "") {
 					t.Fatal("premature DOWN")
 				}
@@ -48,46 +52,46 @@ func TestMachine(t *testing.T) {
 					t.Fatal("missing DOWN")
 				}
 			}
-			m, event := advance(m, Observation{CheckedAt: testTime.Add(20 * time.Second)}, threshold)
+			m, event := advance(m, Observation{CheckedAt: testTime.Add(20 * time.Second)}, threshold, 1)
 			if m.state != Firing || event != "" {
 				t.Fatal("repeated failure produced transition")
 			}
-			m, event = advance(m, Observation{CheckedAt: testTime.Add(21 * time.Second), Gap: true, Success: true}, threshold)
+			m, event = advance(m, Observation{CheckedAt: testTime.Add(21 * time.Second), Gap: true, Success: true}, threshold, 1)
 			if m.state != Firing || event != "" {
 				t.Fatal("gap closed an incident")
 			}
-			m, event = advance(m, Observation{CheckedAt: testTime.Add(22 * time.Second), Success: true}, threshold)
+			m, event = advance(m, Observation{CheckedAt: testTime.Add(22 * time.Second), Success: true}, threshold, 1)
 			if m.state != Healthy || event != Recovered {
 				t.Fatal("missing recovery")
 			}
-			_, event = advance(m, Observation{CheckedAt: testTime.Add(23 * time.Second), Success: true}, threshold)
+			_, event = advance(m, Observation{CheckedAt: testTime.Add(23 * time.Second), Success: true}, threshold, 1)
 			if event != "" {
 				t.Fatal("duplicate recovery")
 			}
 		})
 	}
-	m, _ := advance(machine{}, Observation{CheckedAt: testTime}, 3)
+	m, _ := advance(machine{}, Observation{CheckedAt: testTime}, 3, 1)
 	for _, o := range []Observation{{CheckedAt: testTime.Add(time.Second), Success: true}, {CheckedAt: testTime.Add(time.Second), Gap: true}} {
-		next, event := advance(m, o, 3)
+		next, event := advance(m, o, 3, 1)
 		if next.state != Healthy || next.failures != 0 || event != "" {
 			t.Fatal("pending not reset")
 		}
-		next, event = advance(next, Observation{CheckedAt: testTime.Add(2 * time.Second)}, 3)
+		next, event = advance(next, Observation{CheckedAt: testTime.Add(2 * time.Second)}, 3, 1)
 		if next.failures != 1 || event != "" {
 			t.Fatal("reset sequence reused failures")
 		}
 	}
-	unchanged, event := advance(m, Observation{CheckedAt: testTime.Add(-time.Second), Success: true}, 3)
+	unchanged, event := advance(m, Observation{CheckedAt: testTime.Add(-time.Second), Success: true}, 3, 1)
 	if unchanged != m || event != "" {
 		t.Fatal("out-of-order event consumed")
 	}
 	for range 2 {
-		m, _ = advance(m, Observation{CheckedAt: testTime}, 3)
+		m, _ = advance(m, Observation{CheckedAt: testTime}, 3, 1)
 	}
 	if m.state != Firing {
 		t.Fatal("equal completion times lost actual probes")
 	}
-	m, event = advance(m, Observation{CheckedAt: testTime, Success: true}, 3)
+	m, event = advance(m, Observation{CheckedAt: testTime, Success: true}, 3, 1)
 	if m.state != Healthy || event != Recovered {
 		t.Fatal("equal-time real success did not recover")
 	}
@@ -422,6 +426,285 @@ func deliveryOutcome(task Task, status TaskStatus, at time.Time) Outcome {
 		o.ErrorCode = ErrorNetwork
 	}
 	return o
+}
+
+func TestRecoveryStability(t *testing.T) {
+	for _, threshold := range []int{0, 1, 3, 10} {
+		t.Run(fmt.Sprint(threshold), func(t *testing.T) {
+			store := testBbolt(t)
+			engine, err := NewEngine(store, nil)
+			must(t, err)
+			policy := Policy{FailureThreshold: 1, RecoverySuccesses: threshold, ChannelIDs: []string{"a"}}
+			now := testTime
+			observe := func(success, gap bool) State {
+				now = now.Add(time.Second)
+				state, err := engine.Observe(t.Context(), Observation{EndpointID: "api", CheckedAt: now, Success: success, Gap: gap}, policy)
+				must(t, err)
+				return state
+			}
+			if observe(false, false) != Firing {
+				t.Fatal("failure not confirmed")
+			}
+			want := max(1, threshold)
+			for n := 1; n < want; n++ {
+				if observe(true, false) != Firing {
+					t.Fatal("recovered before stable successes")
+				}
+			}
+			// A failure, a gap (even with an old time), and restart each discard
+			// an unconfirmed recovery; none closes the durable incident.
+			for _, reset := range []string{"failure", "gap", "restart"} {
+				switch reset {
+				case "failure":
+					observe(false, false)
+				case "gap":
+					_, err := engine.Observe(t.Context(), Observation{EndpointID: "api", CheckedAt: testTime, Gap: true}, policy)
+					must(t, err)
+				case "restart":
+					engine, err = NewEngine(store, nil)
+					must(t, err)
+				}
+				for n := 1; n < want; n++ {
+					if observe(true, false) != Firing {
+						t.Fatal("recovery count survived reset")
+					}
+				}
+			}
+			if observe(true, false) != Healthy || observe(true, false) != Healthy {
+				t.Fatal("stable recovery/deduplication failed")
+			}
+			tasks, err := store.Outbox(t.Context())
+			must(t, err)
+			if len(tasks) != 2 {
+				t.Fatal("duplicate incident or recovery")
+			}
+		})
+	}
+	for _, v := range []int{-1, 11} {
+		e, err := NewEngine(testBbolt(t), nil)
+		must(t, err)
+		if _, err = e.Observe(t.Context(), Observation{EndpointID: "api", CheckedAt: testTime}, Policy{RecoverySuccesses: v}); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid recovery threshold")
+		}
+	}
+}
+
+func reminderFixture() Incident {
+	i := testIncident("reminder", "api")
+	i.ReminderPolicy = &ReminderPolicy{Interval: time.Hour, MaxReminders: 3}
+	i.NextReminderAt = i.ConfirmedAt.Add(time.Hour)
+	return i
+}
+
+func TestReminderDecisionsAndIdentity(t *testing.T) {
+	i := reminderFixture()
+	obs := Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt, StatusCode: 500}
+	for _, o := range []Observation{{EndpointID: i.EndpointID, CheckedAt: obs.CheckedAt, Success: true}, {EndpointID: i.EndpointID, CheckedAt: obs.CheckedAt, Gap: true}, {EndpointID: i.EndpointID, CheckedAt: obs.CheckedAt.Add(-time.Nanosecond)}} {
+		got, tasks, err := PrepareReminder(i, o)
+		must(t, err)
+		if got.ReminderCount != 0 || tasks != nil {
+			t.Fatal("non-failure/early reminder generated")
+		}
+	}
+	// Restart/downtime does not catch up an arbitrary number of intervals.
+	obs.CheckedAt = obs.CheckedAt.Add(48 * time.Hour)
+	for sequence := 1; sequence <= 3; sequence++ {
+		next, tasks, err := PrepareReminder(i, obs)
+		must(t, err)
+		if len(tasks) != len(i.ChannelIDs) || next.ReminderCount != sequence {
+			t.Fatal("reminder count/channel snapshot")
+		}
+		for n, task := range tasks {
+			sum := sha256.Sum256([]byte(i.ID + "\x00REMINDER\x00" + strconv.Itoa(sequence) + "\x00" + i.ChannelIDs[n]))
+			if task.EventID != hex.EncodeToString(sum[:]) || task.ReminderSequence != sequence || !task.OccurredAt.Equal(obs.CheckedAt) || validateTask(task) != nil {
+				t.Fatal("reminder identity/time")
+			}
+		}
+		if sequence < 3 && !next.NextReminderAt.Equal(obs.CheckedAt.Add(time.Hour)) {
+			t.Fatal("interval did not start at actual generation")
+		}
+		if sequence == 3 && !next.NextReminderAt.IsZero() {
+			t.Fatal("limit retained a schedule")
+		}
+		_, again, err := PrepareReminder(next, obs)
+		must(t, err)
+		if again != nil {
+			t.Fatal("repeated observation generated again")
+		}
+		i = next
+		obs.CheckedAt = obs.CheckedAt.Add(2 * time.Hour)
+	}
+	_, tasks, err := PrepareReminder(i, obs)
+	must(t, err)
+	if tasks != nil {
+		t.Fatal("count limit exceeded")
+	}
+	legacy := testIncident("legacy", "old")
+	data, err := json.Marshal(legacy)
+	must(t, err)
+	decoded, err := decodeIncident(data)
+	must(t, err)
+	_, tasks, err = PrepareReminder(*decoded, Observation{EndpointID: legacy.EndpointID, CheckedAt: obs.CheckedAt})
+	must(t, err)
+	if tasks != nil {
+		t.Fatal("legacy incident got reminders")
+	}
+	for _, sequence := range []int{0, -1} {
+		if _, err := ReminderEventID("id", sequence, "a"); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid sequence accepted")
+		}
+	}
+	// Old identities do not acquire a sequence component.
+	sum := sha256.Sum256([]byte("id\x00DOWN\x00a"))
+	if eventID("id", Down, "a") != hex.EncodeToString(sum[:]) {
+		t.Fatal("DOWN identity changed")
+	}
+}
+
+func TestReminderDependenciesAndCancellation(t *testing.T) {
+	i := reminderFixture()
+	now := i.NextReminderAt
+	i, first, err := PrepareReminder(i, Observation{EndpointID: i.EndpointID, CheckedAt: now})
+	must(t, err)
+	down := Task{EventID: eventID(i.ID, Down, "a"), IncidentID: i.ID, ChannelID: "a", Type: Down, OccurredAt: i.ConfirmedAt, Status: TaskPending}
+	ready, err := DeliveryReady(first[0], i, &down, nil, now)
+	must(t, err)
+	if ready {
+		t.Fatal("reminder overtook DOWN")
+	}
+	failed, _, err := prepareOutcome(down, nil, deliveryOutcome(down, TaskFailed, now))
+	must(t, err)
+	ready, err = DeliveryReady(first[0], i, &failed, nil, now)
+	must(t, err)
+	if ready {
+		t.Fatal("failed DOWN permitted reminder")
+	}
+	down, _, err = prepareOutcome(down, nil, deliveryOutcome(down, TaskSent, now))
+	must(t, err)
+	retry := deliveryOutcome(first[0], TaskPending, now)
+	previous, _, err := PrepareDeliveryOutcome(first[0], i, &down, nil, retry)
+	must(t, err)
+	// A receipt is task-local, even if corrupt input copied another task's digest.
+	wrong := retry
+	wrong.EventID = "another-task"
+	_, digest, err := normalizeOutcome(wrong)
+	must(t, err)
+	forged := previous
+	forged.AttemptReceipts = []AttemptReceipt{{AttemptID: wrong.AttemptID, Digest: digest}}
+	if _, _, err := PrepareDeliveryOutcome(forged, i, &down, nil, wrong); !errors.Is(err, ErrConflict) {
+		t.Fatal("cross-task receipt accepted")
+	}
+	i, second, err := PrepareReminder(i, Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt})
+	must(t, err)
+	ready, err = DeliveryReady(second[0], i, &down, &previous, i.NextReminderAt)
+	must(t, err)
+	if ready {
+		t.Fatal("pending predecessor did not block")
+	}
+	if _, err := DeliveryReady(second[0], i, &down, nil, i.NextReminderAt); !errors.Is(err, ErrInvalid) {
+		t.Fatal("missing predecessor allowed")
+	}
+	previous, _, err = PrepareDeliveryOutcome(previous, i, &down, nil, deliveryOutcome(previous, TaskFailed, previous.NextAttemptAt))
+	must(t, err)
+	ready, err = DeliveryReady(second[0], i, &down, &previous, i.NextReminderAt)
+	must(t, err)
+	if !ready {
+		t.Fatal("failed predecessor blocked next reminder")
+	}
+	// Preserve a real pending attempt when recovery cancels the next reminder.
+	secondRetry := deliveryOutcome(second[0], TaskPending, second[0].OccurredAt)
+	pending, _, err := PrepareDeliveryOutcome(second[0], i, &down, &previous, secondRetry)
+	must(t, err)
+	i.RecoveredAt = pending.LastAttemptAt.Add(time.Minute)
+	i.NextReminderAt = time.Time{}
+	canceled, err := CancelReminder(pending, i)
+	must(t, err)
+	if canceled.Status != TaskSkipped || canceled.Attempts != 1 || canceled.LastAttemptID != pending.LastAttemptID || !reflect.DeepEqual(canceled.AttemptReceipts, pending.AttemptReceipts) || !canceled.LastAttemptAt.Equal(pending.LastAttemptAt) || !canceled.FinishedAt.Equal(i.RecoveredAt) {
+		t.Fatal("cancellation invented/lost attempts")
+	}
+	if matched, err := canceled.HasOutcome(secondRetry); err != nil || !matched {
+		t.Fatal("historical receipt lost after cancellation")
+	}
+	late := deliveryOutcome(pending, TaskSent, i.RecoveredAt.Add(time.Second))
+	if reconciled, err := canceled.CanceledByRecovery(i, late); err != nil || !reconciled {
+		t.Fatal("late completed send not reconciled")
+	}
+	if _, _, err := PrepareDeliveryOutcome(canceled, i, &down, &previous, late); !errors.Is(err, ErrConflict) {
+		t.Fatal("late send overwrote cancellation")
+	}
+	recovery := Task{EventID: eventID(i.ID, Recovered, "a"), IncidentID: i.ID, ChannelID: "a", Type: Recovered, OccurredAt: i.RecoveredAt, Status: TaskPending}
+	ready, err = DeliveryReady(recovery, i, &down, &pending, i.RecoveredAt)
+	must(t, err)
+	if ready {
+		t.Fatal("recovery overtook pending reminder")
+	}
+	ready, err = DeliveryReady(recovery, i, &down, &canceled, i.RecoveredAt)
+	must(t, err)
+	if !ready {
+		t.Fatal("canceled reminder blocked recovery")
+	}
+}
+
+func TestReminderValidation(t *testing.T) {
+	i := reminderFixture()
+	for _, mutate := range []func(*Incident){func(i *Incident) { i.ReminderPolicy = &ReminderPolicy{Interval: 0, MaxReminders: 3} }, func(i *Incident) { i.ReminderCount = -1 }, func(i *Incident) { i.ReminderCount = 4 }, func(i *Incident) { i.NextReminderAt = time.Time{} }, func(i *Incident) { i.NextReminderAt = i.ConfirmedAt }, func(i *Incident) { i.ReminderPolicy = nil }} {
+		bad := i
+		mutate(&bad)
+		if validateIncident(bad) == nil {
+			t.Fatal("invalid reminder snapshot accepted")
+		}
+	}
+	closed := i
+	closed.RecoveredAt = i.NextReminderAt
+	closed.NextReminderAt = time.Time{}
+	_, tasks, err := PrepareReminder(closed, Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt.Add(time.Hour)})
+	must(t, err)
+	if tasks != nil {
+		t.Fatal("closed incident generated reminder")
+	}
+	late := i
+	late.NextReminderAt = time.Date(9999, 12, 31, 23, 30, 0, 0, time.UTC)
+	if _, _, err := PrepareReminder(late, Observation{EndpointID: i.EndpointID, CheckedAt: late.NextReminderAt}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("overflowing next time accepted")
+	}
+	for _, o := range []Observation{{EndpointID: "other", CheckedAt: i.NextReminderAt}, {EndpointID: i.EndpointID}, {EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt, StatusCode: -1}} {
+		if _, _, err := PrepareReminder(i, o); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid observation accepted")
+		}
+	}
+	i, tasks, err = PrepareReminder(i, Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt})
+	must(t, err)
+	canceled := tasks[0]
+	i.RecoveredAt = canceled.OccurredAt.Add(time.Minute)
+	i.NextReminderAt = time.Time{}
+	canceled, err = CancelReminder(canceled, i)
+	must(t, err)
+	if canceled.Attempts != 0 || len(canceled.AttemptReceipts) != 0 {
+		t.Fatal("unattempted cancellation counted as a send")
+	}
+	o := deliveryOutcome(tasks[0], TaskSent, i.RecoveredAt.Add(time.Second))
+	active := i
+	active.RecoveredAt = time.Time{}
+	active.NextReminderAt = i.ConfirmedAt.Add(2 * time.Hour)
+	if ok, err := canceled.CanceledByRecovery(active, o); err == nil || ok {
+		t.Fatal("unconfirmed recovery released fence")
+	}
+	o.ExpectedAttempts = 1
+	if ok, err := canceled.CanceledByRecovery(i, o); err != nil || ok {
+		t.Fatal("changed attempt count released fence")
+	}
+	bad := canceled
+	bad.Type = Down
+	bad.ReminderSequence = 0
+	bad.EventID = eventID(bad.IncidentID, Down, bad.ChannelID)
+	if validateTask(bad) == nil {
+		t.Fatal("non-reminder accepted recovery cancellation code")
+	}
+	o = deliveryOutcome(tasks[0], TaskSkipped, i.RecoveredAt)
+	o.ErrorCode = ErrorIncidentRecovered
+	if _, _, err := normalizeOutcome(o); !errors.Is(err, ErrInvalid) {
+		t.Fatal("cancellation reason accepted as a send")
+	}
 }
 
 func readTask(t *testing.T, s DeliveryStore, i Incident, kind EventType, channel string) Task {

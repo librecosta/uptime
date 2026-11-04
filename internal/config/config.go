@@ -82,9 +82,11 @@ type UptimeConfig struct {
 
 // AlertsConfig enables incident tracking and optional channel delivery.
 // ConsecutiveFailures is 1 through 10, defaulting to three.
+// RecoverySuccesses is 1 through 10, defaulting to one.
 type AlertsConfig struct {
 	Enabled             bool
 	ConsecutiveFailures int
+	RecoverySuccesses   int
 	Channels            []AlertChannelConfig // nil when disabled; contains credentials, never log.
 }
 

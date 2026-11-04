@@ -150,7 +150,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `uptime.interval` | `10s` |
 | `uptime.retention`, `uptime.window` | `90d`, `30d` |
 | `uptime.timezone` | `UTC` |
-| `alerts.enabled`, `alerts.consecutive_failures` | `false`, `3` |
+| `alerts.enabled`, `alerts.consecutive_failures`, `alerts.recovery_successes` | `false`, `3`, `1` |
 | `alerts.channels`, endpoint `alert_channels` | no channels; all defined channels when alerts are enabled |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
 | `ui.description` | `Current service availability.` |
@@ -196,7 +196,7 @@ and make no notification requests.
 | Redis prefix | non-empty after env expansion; no leading/trailing colon or whitespace; no control characters; internal colons allowed |
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
 | Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
-| Alerts | optional incident tracking and delivery; literal boolean enabled; integer consecutive_failures 1..10, including when disabled; unique stable channel IDs and webhook/feishu branches; see [alert contract](alerts.md#configuration-and-delivery-runtime-c3) |
+| Alerts | optional incident tracking and delivery; literal boolean enabled; integer consecutive_failures and recovery_successes 1..10, including when disabled; unique stable channel IDs and webhook/feishu branches; see [alert contract](alerts.md#configuration-and-delivery-runtime-c3) |
 | Alert routing | when enabled, omission selects all channels, explicit [] selects none, explicit IDs must be unique and defined; confirmation snapshots persist across configuration changes |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
 | UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |

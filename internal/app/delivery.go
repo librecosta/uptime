@@ -239,9 +239,22 @@ func (d *deliveryWorker) record() bool {
 	}
 	task, err := d.store.GetTask(ctx, o.EventID)
 	if err == nil && task != nil {
-		if matched, err := task.HasOutcome(o); err == nil && matched {
+		matched, receiptErr := task.HasOutcome(o)
+		if receiptErr == nil && matched {
 			d.pending = nil
 			return true
+		}
+		if receiptErr == nil && task.Type == alerts.Reminder && task.Status == alerts.TaskSkipped && task.LastErrorCode == alerts.ErrorIncidentRecovered {
+			// Recovery may cancel an in-flight reminder without recording its send.
+			// Prove the closed incident and unchanged history before releasing the
+			// fence; an unavailable/mismatched read still leaves the outcome unknown.
+			incident, err := d.incidents.Get(ctx, task.IncidentID)
+			if err == nil && incident != nil {
+				if canceled, err := task.CanceledByRecovery(*incident, o); err == nil && canceled {
+					d.pending = nil
+					return true
+				}
+			}
 		}
 	}
 	d.report(o.EventID, d.pendingChannel, alerts.ErrorUnavailable)

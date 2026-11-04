@@ -33,6 +33,7 @@ const (
 	ErrorInternal          ErrorCode = "internal"
 	ErrorDependencyFailed  ErrorCode = "dependency_failed"
 	ErrorDependencySkipped ErrorCode = "dependency_skipped"
+	ErrorIncidentRecovered ErrorCode = "incident_recovered" // Non-attempt reminder cancellation only.
 )
 
 // MaxAttempts includes the first delivery attempt. MaxDuePageSize bounds both
@@ -132,14 +133,28 @@ func validTime(t time.Time) bool { return !t.IsZero() && t.Year() >= 1 && t.Year
 
 func validCode(code ErrorCode) bool {
 	switch code {
-	case ErrorNetwork, ErrorTimeout, ErrorRateLimited, ErrorRejected, ErrorUnavailable, ErrorInvalidRequest, ErrorCanceled, ErrorInternal, ErrorDependencyFailed, ErrorDependencySkipped:
+	case ErrorNetwork, ErrorTimeout, ErrorRateLimited, ErrorRejected, ErrorUnavailable, ErrorInvalidRequest, ErrorCanceled, ErrorInternal, ErrorDependencyFailed, ErrorDependencySkipped, ErrorIncidentRecovered:
 		return true
 	}
 	return false
 }
 
 func validateTask(t Task) error {
-	if t.IncidentID == "" || !channelPattern.MatchString(t.ChannelID) || (t.Type != Down && t.Type != Recovered) || t.EventID != eventID(t.IncidentID, t.Type, t.ChannelID) || !validTime(t.OccurredAt) || t.Attempts < 0 || t.Attempts > MaxAttempts || len(t.AttemptReceipts) != t.Attempts {
+	id := eventID(t.IncidentID, t.Type, t.ChannelID)
+	if t.Type == Reminder {
+		var err error
+		id, err = ReminderEventID(t.IncidentID, t.ReminderSequence, t.ChannelID)
+		if err != nil {
+			return err
+		}
+	} else if t.ReminderSequence != 0 {
+		return ErrInvalid
+	}
+	if t.IncidentID == "" || !channelPattern.MatchString(t.ChannelID) || (t.Type != Down && t.Type != Recovered && t.Type != Reminder) || t.EventID != id || !validTime(t.OccurredAt) || t.Attempts < 0 || t.Attempts > MaxAttempts || len(t.AttemptReceipts) != t.Attempts {
+		return ErrInvalid
+	}
+	canceled := t.Type == Reminder && t.Status == TaskSkipped && t.LastErrorCode == ErrorIncidentRecovered
+	if t.LastErrorCode == ErrorIncidentRecovered && !canceled {
 		return ErrInvalid
 	}
 	seen := make(map[string]bool, len(t.AttemptReceipts))
@@ -163,7 +178,7 @@ func validateTask(t Task) error {
 			return ErrInvalid
 		}
 	case TaskSent, TaskFailed, TaskSkipped:
-		if !validTime(t.FinishedAt) || t.FinishedAt.Before(t.OccurredAt) || !t.NextAttemptAt.IsZero() || (t.Attempts > 0 && !t.FinishedAt.Equal(t.LastAttemptAt)) || (t.Status != TaskSkipped && t.Attempts == 0) || (t.Status == TaskSent && t.LastErrorCode != "") || (t.Status != TaskSent && !validCode(t.LastErrorCode)) {
+		if !validTime(t.FinishedAt) || t.FinishedAt.Before(t.OccurredAt) || !t.NextAttemptAt.IsZero() || (t.Attempts > 0 && ((!canceled && !t.FinishedAt.Equal(t.LastAttemptAt)) || t.FinishedAt.Before(t.LastAttemptAt))) || (t.Status != TaskSkipped && t.Attempts == 0) || (t.Status == TaskSent && t.LastErrorCode != "") || (t.Status != TaskSent && !validCode(t.LastErrorCode)) {
 			return ErrInvalid
 		}
 	default:
@@ -174,7 +189,7 @@ func validateTask(t Task) error {
 
 func normalizeOutcome(o Outcome) (Outcome, string, error) {
 	o.AttemptedAt, o.RetryAt = o.AttemptedAt.UTC(), o.RetryAt.UTC()
-	if o.EventID == "" || !channelPattern.MatchString(o.AttemptID) || o.ExpectedAttempts < 0 || o.ExpectedAttempts >= MaxAttempts || !validTime(o.AttemptedAt) {
+	if o.EventID == "" || !channelPattern.MatchString(o.AttemptID) || o.ExpectedAttempts < 0 || o.ExpectedAttempts >= MaxAttempts || !validTime(o.AttemptedAt) || o.ErrorCode == ErrorIncidentRecovered {
 		return o, "", ErrInvalid
 	}
 	switch o.Status {
@@ -208,7 +223,7 @@ func dueAt(t Task) time.Time {
 }
 
 func deliverable(t Task, down *Task, now time.Time) bool {
-	return t.Status == TaskPending && !dueAt(t).After(now) && (t.Type == Down || down != nil && down.Status == TaskSent)
+	return t.Status == TaskPending && !dueAt(t).After(now) && (t.Type == Down || t.Type == Recovered && down != nil && down.Status == TaskSent)
 }
 
 // skipRecovery is used both when recovery is created after DOWN failed and when
@@ -232,14 +247,21 @@ func skipRecovery(task Task, down *Task) (Task, error) {
 }
 
 func prepareOutcome(task Task, down *Task, o Outcome) (Task, bool, error) {
+	return applyOutcome(task, o, deliverable(task, down, o.AttemptedAt))
+}
+
+func applyOutcome(task Task, o Outcome, ready bool) (Task, bool, error) {
 	o, digest, err := normalizeOutcome(o)
 	if err != nil {
 		return Task{}, false, err
 	}
+	if task.EventID != o.EventID {
+		return Task{}, false, ErrConflict
+	}
 	if o.ExpectedAttempts < len(task.AttemptReceipts) && task.AttemptReceipts[o.ExpectedAttempts] == (AttemptReceipt{o.AttemptID, digest}) {
 		return task, false, nil
 	}
-	if task.EventID != o.EventID || task.Status != TaskPending || task.Attempts != o.ExpectedAttempts || !deliverable(task, down, o.AttemptedAt) || o.AttemptedAt.Before(task.LastAttemptAt) {
+	if task.Status != TaskPending || task.Attempts != o.ExpectedAttempts || !ready || o.AttemptedAt.Before(task.LastAttemptAt) {
 		return Task{}, false, ErrConflict
 	}
 	for _, receipt := range task.AttemptReceipts {

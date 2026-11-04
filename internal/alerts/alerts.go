@@ -31,6 +31,8 @@ type EventType string
 const (
 	Down      EventType = "DOWN"
 	Recovered EventType = "RECOVERED"
+	// Reminder identifies a numbered reminder; Schema v1 never emits it.
+	Reminder EventType = "REMINDER"
 )
 
 var (
@@ -51,38 +53,43 @@ type Observation struct {
 
 // Policy is supplied explicitly by the caller, without channel credentials.
 type Policy struct {
-	FailureThreshold int // Zero selects three; otherwise 1 through 10.
-	ChannelIDs       []string
+	FailureThreshold  int // Zero selects three; otherwise 1 through 10.
+	RecoverySuccesses int // Zero selects one; otherwise 1 through 10. Counts are volatile.
+	ChannelIDs        []string
 }
 
 // Incident stores a stable random identity and immutable channel ID snapshot.
 // A zero RecoveredAt denotes an active incident. No channel credentials are stored.
 type Incident struct {
-	ID             string    `json:"id"`
-	EndpointID     string    `json:"endpoint_id"`
-	FirstFailureAt time.Time `json:"first_failure_at"`
-	ConfirmedAt    time.Time `json:"confirmed_at"`
-	RecoveredAt    time.Time `json:"recovered_at"`
-	ChannelIDs     []string  `json:"channel_ids"`
+	ID             string          `json:"id"`
+	EndpointID     string          `json:"endpoint_id"`
+	FirstFailureAt time.Time       `json:"first_failure_at"`
+	ConfirmedAt    time.Time       `json:"confirmed_at"`
+	RecoveredAt    time.Time       `json:"recovered_at"`
+	ChannelIDs     []string        `json:"channel_ids"`
+	ReminderPolicy *ReminderPolicy `json:"reminder_policy,omitempty"` // Nil disables reminders, including legacy records.
+	ReminderCount  int             `json:"reminder_count,omitempty"`  // Issued events, independent of delivery attempts.
+	NextReminderAt time.Time       `json:"next_reminder_at,omitzero"` // Active, non-exhausted snapshots only.
 }
 
 // Task is a durable outbox entry. Creation and delivery state updates are separate;
 // neither operation sends notifications. Zero delivery fields represent old B1/B2
 // PENDING records, immediately due at OccurredAt.
 type Task struct {
-	EventID         string           `json:"event_id"`
-	IncidentID      string           `json:"incident_id"`
-	ChannelID       string           `json:"channel_id"`
-	Type            EventType        `json:"type"`
-	OccurredAt      time.Time        `json:"occurred_at"`
-	Status          TaskStatus       `json:"status"`
-	Attempts        int              `json:"attempts,omitempty"` // Accepted outcomes; dependency skips do not increment.
-	NextAttemptAt   time.Time        `json:"next_attempt_at,omitzero"`
-	LastAttemptAt   time.Time        `json:"last_attempt_at,omitzero"`
-	FinishedAt      time.Time        `json:"finished_at,omitzero"`
-	LastErrorCode   ErrorCode        `json:"last_error_code,omitempty"`
-	LastAttemptID   string           `json:"last_attempt_id,omitempty"`
-	AttemptReceipts []AttemptReceipt `json:"attempt_receipts,omitempty"`
+	EventID          string           `json:"event_id"`
+	IncidentID       string           `json:"incident_id"`
+	ChannelID        string           `json:"channel_id"`
+	Type             EventType        `json:"type"`
+	ReminderSequence int              `json:"reminder_sequence,omitempty"` // Positive only for REMINDER.
+	OccurredAt       time.Time        `json:"occurred_at"`
+	Status           TaskStatus       `json:"status"`
+	Attempts         int              `json:"attempts,omitempty"` // Accepted outcomes; dependency skips do not increment.
+	NextAttemptAt    time.Time        `json:"next_attempt_at,omitzero"`
+	LastAttemptAt    time.Time        `json:"last_attempt_at,omitzero"`
+	FinishedAt       time.Time        `json:"finished_at,omitzero"`
+	LastErrorCode    ErrorCode        `json:"last_error_code,omitempty"`
+	LastAttemptID    string           `json:"last_attempt_id,omitempty"`
+	AttemptReceipts  []AttemptReceipt `json:"attempt_receipts,omitempty"`
 }
 
 // Transition atomically persists Incident and its derived per-channel tasks.
@@ -106,13 +113,16 @@ type machine struct {
 	state       State
 	failures    int
 	first, last time.Time
+	successes   int
+	incidentID  string
 }
 
-func advance(m machine, o Observation, threshold int) (machine, EventType) {
+func advance(m machine, o Observation, threshold, recoverySuccesses int) (machine, EventType) {
 	if m.state == "" {
 		m.state = Healthy
 	}
 	if o.Gap {
+		m.successes = 0
 		if o.CheckedAt.After(m.last) {
 			m.last = o.CheckedAt
 		}
@@ -128,14 +138,19 @@ func advance(m machine, o Observation, threshold int) (machine, EventType) {
 	}
 	m.last = o.CheckedAt
 	if o.Success {
-		kind := EventType("")
 		if m.state == Firing {
-			kind = Recovered
+			m.successes++
+			if m.successes < recoverySuccesses {
+				return m, ""
+			}
+			m.state, m.failures, m.first, m.successes, m.incidentID = Healthy, 0, time.Time{}, 0, ""
+			return m, Recovered
 		}
 		m.state, m.failures, m.first = Healthy, 0, time.Time{}
-		return m, kind
+		return m, ""
 	}
 	if m.state == Firing {
+		m.successes = 0
 		return m, ""
 	}
 	if m.failures == 0 {
@@ -191,8 +206,12 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	if threshold == 0 {
 		threshold = 3
 	}
+	recoverySuccesses := policy.RecoverySuccesses
+	if recoverySuccesses == 0 {
+		recoverySuccesses = 1
+	}
 	channels, err := normalizeChannels(policy.ChannelIDs)
-	if err != nil || threshold < 1 || threshold > 10 || o.EndpointID == "" || o.StatusCode < 0 || o.StatusCode > 599 {
+	if err != nil || threshold < 1 || threshold > 10 || recoverySuccesses < 1 || recoverySuccesses > 10 || o.EndpointID == "" || o.StatusCode < 0 || o.StatusCode > 599 {
 		return "", ErrInvalid
 	}
 	if o.CheckedAt.IsZero() {
@@ -218,6 +237,10 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	}
 	m := e.states[o.EndpointID]
 	if active != nil {
+		if m.incidentID != active.ID {
+			m.successes = 0
+		}
+		m.incidentID = active.ID
 		m.state, m.first = Firing, active.FirstFailureAt
 		if m.last.Before(active.ConfirmedAt) {
 			m.last = active.ConfirmedAt
@@ -225,7 +248,7 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	} else if m.state == Firing {
 		m = machine{state: Healthy, last: m.last}
 	}
-	next, kind := advance(m, o, threshold)
+	next, kind := advance(m, o, threshold, recoverySuccesses)
 	if kind == "" {
 		e.states[o.EndpointID] = next
 		return next.state, nil
@@ -233,6 +256,7 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	var incident Incident
 	if kind == Down {
 		incident = Incident{ID: rand.Text(), EndpointID: o.EndpointID, FirstFailureAt: next.first, ConfirmedAt: o.CheckedAt, ChannelIDs: channels}
+		next.incidentID = incident.ID
 	} else {
 		incident = *active
 		incident.RecoveredAt = o.CheckedAt
@@ -280,17 +304,22 @@ func validateIncident(i Incident) error {
 	if err != nil || !slices.Equal(ids, i.ChannelIDs) || i.ID == "" || i.EndpointID == "" || i.FirstFailureAt.IsZero() || i.ConfirmedAt.IsZero() || i.ConfirmedAt.Before(i.FirstFailureAt) || (!i.RecoveredAt.IsZero() && i.RecoveredAt.Before(i.ConfirmedAt)) {
 		return ErrInvalid
 	}
-	return nil
+	return validateReminders(i)
 }
 
 func sameIncident(a, b Incident) bool {
-	return a.ID == b.ID && a.EndpointID == b.EndpointID && a.FirstFailureAt.Equal(b.FirstFailureAt) && a.ConfirmedAt.Equal(b.ConfirmedAt) && slices.Equal(a.ChannelIDs, b.ChannelIDs)
+	return a.ID == b.ID && a.EndpointID == b.EndpointID && a.FirstFailureAt.Equal(b.FirstFailureAt) && a.ConfirmedAt.Equal(b.ConfirmedAt) && slices.Equal(a.ChannelIDs, b.ChannelIDs) && sameReminderPolicy(a.ReminderPolicy, b.ReminderPolicy)
 }
 
 // prepare is shared validation, not shared I/O: backends must call it within
 // their atomic conditional write boundary, before changing any persistent data.
 func prepare(existing *Incident, activeID string, change Transition) (Incident, []Task, error) {
 	i := change.Incident
+	// Schema v1 cannot represent reminder transactions. B2 must migrate before
+	// enabling snapshots or tasks; the runtime has no reminder policy wiring.
+	if i.ReminderPolicy != nil || i.ReminderCount != 0 || !i.NextReminderAt.IsZero() {
+		return Incident{}, nil, ErrInvalid
+	}
 	if err := validateIncident(i); err != nil {
 		return Incident{}, nil, err
 	}
@@ -347,6 +376,9 @@ func decodeIncident(data []byte) (*Incident, error) {
 	if err := validateIncident(i); err != nil {
 		return nil, err
 	}
+	if i.ReminderPolicy != nil || i.ReminderCount != 0 || !i.NextReminderAt.IsZero() {
+		return nil, ErrInvalid
+	}
 	return &i, nil
 }
 
@@ -354,6 +386,9 @@ func decodeTask(data []byte) (Task, error) {
 	var task Task
 	if err := json.Unmarshal(data, &task); err != nil {
 		return task, ErrInvalid
+	}
+	if task.Type == Reminder || task.ReminderSequence != 0 {
+		return Task{}, ErrInvalid // Reminder records require B2's versioned persistence.
 	}
 	if err := validateTask(task); err != nil {
 		return Task{}, ErrInvalid

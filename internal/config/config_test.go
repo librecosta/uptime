@@ -183,7 +183,7 @@ func wantInvalid(t *testing.T, data []byte, lookup envLookup, field string) {
 
 func TestDefaults(t *testing.T) {
 	cfg := mustLoad(t, []byte(minimal), emptyEnv)
-	if cfg.Alerts.Enabled || cfg.Alerts.ConsecutiveFailures != 3 {
+	if cfg.Alerts.Enabled || cfg.Alerts.ConsecutiveFailures != 3 || cfg.Alerts.RecoverySuccesses != 1 {
 		t.Fatal("alert defaults")
 	}
 	if cfg.Server.Address != "127.0.0.1:18580" || cfg.Server.ShutdownTimeout != 10*time.Second || cfg.Server.TLS != nil || cfg.Auth != nil {
@@ -205,6 +205,16 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestAlertsConfig(t *testing.T) {
+	for _, threshold := range []int{1, 3, 10} {
+		cfg := mustLoad(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.recovery_successes": threshold}), emptyEnv)
+		if cfg.Alerts.RecoverySuccesses != threshold {
+			t.Fatal("recovery policy mapping")
+		}
+	}
+	for _, value := range []any{0, -1, 11, 2.5, "3", nil} {
+		wantInvalid(t, configData(t, map[string]any{"alerts.recovery_successes": value}), emptyEnv, "alerts.recovery_successes")
+	}
+	wantInvalid(t, []byte(minimal+"alerts: {reminders: {interval: 1h}}\n"), emptyEnv, "unknown")
 	for _, threshold := range []int{1, 3, 10} {
 		cfg := mustLoad(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.consecutive_failures": threshold}), emptyEnv)
 		if !cfg.Alerts.Enabled || cfg.Alerts.ConsecutiveFailures != threshold {

@@ -122,8 +122,9 @@ HTTP Webhook or Feishu/Lark custom bots; these are not part of the v0.1.0 downlo
 above. Alerts are disabled by default. Start with the [development example](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml).
 Enable `alerts.enabled`, define stable channel IDs in `alerts.channels`, and
 optionally select `alert_channels` for each endpoint. Omission selects all channels;
-`[]` sends none. One success resolves an incident after the configured consecutive
-failure threshold (default three). Restart to apply configuration changes.
+`[]` sends none. The consecutive failure threshold defaults to three. On `develop`,
+`alerts.recovery_successes` sets the consecutive successes required to resolve an
+incident (1–10, default one). Restart to apply configuration changes.
 
 Run **one alert executor per database/Redis prefix**. Incidents and delivery tasks
 persist separately from monitoring history: bbolt uses a sibling `alerts.db`, which
