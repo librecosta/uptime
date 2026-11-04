@@ -6,34 +6,25 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Optional Webhook/Feishu channel configuration and endpoint routing, a single
-  persistent-outbox delivery worker with bounded scans, existing retry policy,
-  uncertain-result reconciliation, per-bot limits and ordered graceful shutdown.
-  At-least-once delivery can repeat messages; one alert executor is required.
-
-- Independent Generic HTTP Webhook and Feishu/Lark custom-bot text adapters,
-  with stable event payloads, optional credentials/signing, bounded HTTP requests,
-  classified single-attempt results and Retry-After hints. No runtime delivery,
-  channel configuration, persistence updates or dependencies are introduced.
-
-- Internal delivery persistence for PENDING/SENT/FAILED/SKIPPED outbox tasks,
-  conditional attempt receipts and read-back reconciliation, bounded due-task
-  queries, pure capped exponential backoff, and atomic DOWN/RECOVERED dependency
-  handling in bbolt and Redis. Existing alert Schema v1 records remain readable;
-  no delivery worker, real notifications, channel configuration or dependencies
-  are introduced.
-
-- Internal alert state machine, durable incidents and simulated PENDING outbox
-  with independent bbolt/Redis persistence, separate from monitoring history.
-
-- Optional `alerts.enabled` and `alerts.consecutive_failures` connect upstream
-  probe results to durable incidents through a bounded ingress and single worker.
-  Sequence gaps reset pending counts; shutdown drains accepted results before
-  closing independent bbolt alert storage or the shared Redis client. No channels
-  or actual notifications are configured or sent.
+- Optional DOWN/RECOVERED alerts for HTTP/HTTPS endpoints, disabled by default,
+  with configurable consecutive failures (1–10, default three) and recovery on
+  a successful probe. Bounded ingress detects gaps without inventing failures.
+- Generic HTTP Webhook and Feishu/Lark custom-bot text notifications, optional
+  credentials/signing, stable channel IDs and per-endpoint routing.
+- Durable incidents and PENDING/SENT/FAILED/SKIPPED outbox tasks in independent
+  bbolt/Redis alert storage. One delivery worker handles ordered recovery,
+  capped exponential backoff (at most ten attempts), Retry-After, per-bot limits,
+  restart recovery and uncertain-result reconciliation. At-least-once delivery
+  can repeat messages; one alert executor is required per database/Redis prefix.
+- Prepared [v0.2.0 release notes](docs/releases/v0.2.0.md), paired monitoring/alert
+  database backup and restore examples, and a Docker smoke check for both files'
+  non-root ownership, private permissions and persistence.
 
 ### Changed
 
+- Allow separate shutdown/drain/recording phases in Docker/systemd stop budgets
+  (45 seconds with the default application timeout); application defaults stay
+  unchanged. Existing monitoring Schema v1 and alert Schema v1 remain unchanged.
 - Validate Redis WATCH conditions before returning logical errors from interleaved
   reads; concurrent identical recoveries remain idempotent. Redis tests distinguish
   an absent empty active hash from keys that actually have expiry.

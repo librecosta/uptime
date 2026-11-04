@@ -319,6 +319,20 @@ configuration and a single delivery worker. There is no management API.
   arbitration are implemented. Back up alerts.db alongside monitoring history
   while stopped. No schema, TTL or cleanup policy changes accompany C3.
 
+## Deployment and backup acceptance (D1)
+
+Stop the process before copying bbolt files. Preserve `uptime.db` and its sibling
+`alerts.db` as one backup set whenever the latter exists, even with alerts now
+disabled. Restore both with service ownership and mode 0600; do not mix snapshots
+or leave a newer alert file beside restored monitoring history. Existing schemas
+are unchanged, and no migration, automatic backup or retention task is added.
+Redis uses `<monitoring prefix>:alerts:v1:` in the configured database; Redis's
+own coordinated RDB/AOF backup must include monitoring and alert state together.
+External stop budgets must allow separate shutdown, drain and outcome-recording
+timeouts before storage closure. The deployment examples allow 45s for the default
+10s application timeout; uninterruptible I/O still cannot guarantee a hard bound.
+These in-process alerts cannot detect the monitor's complete process failure.
+
 ## Boundary and verification
 
 One alert executor is supported. The engine serializes its calls; both stores

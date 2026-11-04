@@ -42,7 +42,7 @@ docker cp "$name-check:/usr/share/licenses/librecosta-uptime/LICENSE" "$tmp/LICE
 cmp LICENSE "$tmp/LICENSE"
 docker export --output "$tmp/rootfs.tar" "$name-check"
 tar -tf "$tmp/rootfs.tar" > "$tmp/files"
-if grep -Eq '^(src/|usr/local/go/|bin/sh$|etc/uptime/uptime.yaml$|data/uptime.db$|.*\.env$|.*\.key$)' "$tmp/files"; then
+if grep -Eq '^(src/|usr/local/go/|bin/sh$|etc/uptime/uptime.yaml$|data/(uptime|alerts)\.db$|.*\.env$|.*\.key$)' "$tmp/files"; then
   echo 'Unexpected source/toolchain/config/data/private key in runtime image' >&2
   exit 1
 fi
@@ -65,6 +65,10 @@ storage:
     path: /data/uptime.db
 uptime:
   interval: 1s
+alerts:
+  enabled: true
+  consecutive_failures: 1
+  channels: []
 endpoints:
   - id: $1
     url: http://127.0.0.1:1/
@@ -72,7 +76,7 @@ EOF
   chmod 644 "$tmp/uptime.yaml"
 }
 start_and_check() {
-  docker run -d --name "$name" --stop-timeout 20 --read-only \
+  docker run -d --name "$name" --stop-timeout 45 --read-only \
     --cap-drop ALL --security-opt no-new-privileges \
     -p 127.0.0.1::18580 \
     --mount "type=volume,src=$volume,dst=/data" \
@@ -94,15 +98,24 @@ start_and_check() {
   docker stop "$name" >/dev/null
   test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
 }
+check_databases() {
+  for database in uptime alerts; do
+    docker cp "$name:/data/$database.db" - > "$tmp/$database.tar"
+    tar --numeric-owner -tvf "$tmp/$database.tar" > "$tmp/$database.files"
+    grep -Eq "^-rw-------[[:space:]]+65532/65532[[:space:]]+[1-9][0-9]* .* $database.db$" "$tmp/$database.files"
+    tar -xf "$tmp/$database.tar" -C "$tmp"
+    test -s "$tmp/$database.db"
+  done
+}
 write_config retired
 start_and_check
-docker cp "$name:/data/uptime.db" "$tmp/uptime.db"
-test -s "$tmp/uptime.db"
+check_databases
 docker rm "$name" >/dev/null
 
 # A different YAML ID prevents a fresh database from accidentally passing this test.
 write_config replacement
 start_and_check
+check_databases
 docker rm "$name" >/dev/null
 services=$(docker run --rm --name "$name-check" \
   --mount "type=volume,src=$volume,dst=/data" \

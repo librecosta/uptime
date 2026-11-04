@@ -119,7 +119,7 @@ hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 
 The `develop` branch adds optional DOWN/RECOVERED notifications through Generic
 HTTP Webhook or Feishu/Lark custom bots; these are not part of the v0.1.0 downloads
-above. Start with the [development example](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml).
+above. Alerts are disabled by default. Start with the [development example](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml).
 Enable `alerts.enabled`, define stable channel IDs in `alerts.channels`, and
 optionally select `alert_channels` for each endpoint. Omission selects all channels;
 `[]` sends none. One success resolves an incident after the configured consecutive
@@ -133,6 +133,13 @@ delivery is not guaranteed. Webhook receivers should deduplicate by EventID. Rem
 channel leaves its pending tasks waiting; keep its ID/configuration available for
 historical incidents. See the [alert contract](https://github.com/librecosta/uptime/blob/develop/contracts/alerts.md)
 for retry, security and ownership constraints.
+There is no separate alert management UI, and this process cannot notify you
+after it has stopped completely; use an independent external health check.
+The candidate [Docker](https://github.com/librecosta/uptime/blob/develop/docs/deployment/docker.md#stop-maintain-back-up-and-upgrade)
+and [systemd](https://github.com/librecosta/uptime/blob/develop/docs/deployment/systemd.md#stop-back-up-maintain-and-upgrade)
+guides cover paired database backup and restore. See the prepared
+[v0.2.0 release notes](https://github.com/librecosta/uptime/blob/develop/docs/releases/v0.2.0.md)
+for upgrade constraints; this version has not yet been released.
 
 ## Service Management
 

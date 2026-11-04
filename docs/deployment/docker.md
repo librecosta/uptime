@@ -42,7 +42,7 @@ docker run --rm \
 
 docker volume create librecosta-uptime-data
 docker run -d --name librecosta-uptime \
-  --stop-timeout 20 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --stop-timeout 45 --read-only --cap-drop ALL --security-opt no-new-privileges \
   -p 127.0.0.1:18580:18580 \
   --mount type=volume,src=librecosta-uptime-data,dst=/data \
   --mount "type=bind,src=$(pwd)/uptime.yaml,dst=/etc/uptime/uptime.yaml,readonly" \
@@ -50,7 +50,9 @@ docker run -d --name librecosta-uptime \
 ```
 
 A new named volume inherits the image directory's ownership; non-root can create
-`/data/uptime.db`. Retain this named volume when replacing a container. Do not use
+`/data/uptime.db` and, when alerts are enabled, its sibling `/data/alerts.db`.
+Both files use mode 0600 and the same non-root ownership. Retain this named volume
+when replacing a container. Do not use
 an anonymous volume or delete the named volume during upgrades. For a host bind
 mount instead, an administrator must prepare its directory for UID/GID 65532,
 for example `sudo install -d -m 0700 -o 65532 -g 65532 ./data`, and mount that
@@ -63,6 +65,12 @@ Resolve the source first with `$configPath = (Resolve-Path ./uptime.yaml).Path`,
 then pass `--mount "type=bind,src=$configPath,dst=/etc/uptime/uptime.yaml,readonly"`.
 Docker Desktop must have access to that Windows path; Linux ownership commands
 above apply to Linux hosts.
+
+Alerts are available in the v0.2.0 candidate, not the v0.1.0 image above. For a
+candidate built from source, add the `alerts` section from the
+[current example](../../configs/uptime.example.yaml) to the mounted YAML. Use one
+alert executor per data directory/Redis prefix. Keep channel credentials private;
+no real credentials are needed for `enabled: true` with `channels: []`.
 
 ## Health and exposure
 
@@ -90,19 +98,31 @@ Auth is enabled, but native TLS still applies. The image exposes metadata for po
 
 ## Stop, maintain, back up and upgrade
 
-`docker stop librecosta-uptime` sends SIGTERM directly to Go. Keep Docker's stop
-timeout greater than `server.shutdown_timeout` (20s versus the default 10s).
-Increase both deliberately when needed; forced termination cannot guarantee safe
-completion of blocked I/O.
+`docker stop librecosta-uptime` sends SIGTERM directly to Go. The 45-second stop
+budget allows for HTTP/probe shutdown, observation draining, then completion of
+delivery recording, which can use separate application timeout budgets (10s by
+default). Both workers exit before alert storage closes; monitoring storage closes
+last. Increase the external budget when increasing `server.shutdown_timeout`.
+Forced termination cannot guarantee safe completion of blocked I/O.
 
 Stop the serving container before bbolt backup or `service list/export/remove`.
-For example, from the same deployment directory:
+When alerts have been enabled, back up **both `uptime.db` and `alerts.db` from the
+same stopped instance**, even if alerts are now disabled. The latter contains
+incidents and pending deliveries. On a Linux Docker host, copy the stopped data
+directory to a new private backup set, preserving numeric ownership:
 
 ```sh
 docker stop librecosta-uptime
 umask 077
 mkdir -p backups
-docker cp librecosta-uptime:/data/uptime.db "backups/uptime-$(date -u +%Y%m%dT%H%M%SZ).db"
+backup="$(pwd)/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir "$backup"
+sudo docker cp -a librecosta-uptime:/data/. "$backup"
+sudo chown root:root "$backup"
+sudo chmod 0700 "$backup"
+sudo test -s "$backup/uptime.db"
+# Also require this check if alerts have been enabled:
+# sudo test -s "$backup/alerts.db"
 docker run --rm \
   --mount type=volume,src=librecosta-uptime-data,dst=/data \
   --mount "type=bind,src=$(pwd)/uptime.yaml,dst=/etc/uptime/uptime.yaml,readonly" \
@@ -111,12 +131,39 @@ docker start librecosta-uptime
 ```
 
 Verify each command succeeds before continuing; keep backups privately and avoid
-reusing a backup filename. bbolt maintenance still needs a writable mount for its
+reusing a backup directory. Save the matching configuration separately with private
+permissions; it can contain credentials. bbolt maintenance still needs a writable mount for its
 exclusive file open. Export JSON is not a database backup and there is no import.
 An export destination must be explicitly mounted writable or placed in `/data`
 and copied out afterward. Removal retains the existing detached-only safeguards.
+
+To restore, stop the container and retain a backup of its current data first.
+Use a complete matching backup set; do not combine monitoring and alert files
+from different points in time. If a backup has no `alerts.db`, restore into a
+fresh volume; do not retain an unrelated alert database from a later run.
+With the container still stopped:
+
+```sh
+sudo docker cp -a "$backup/uptime.db" librecosta-uptime:/data/uptime.db
+if sudo test -f "$backup/alerts.db"; then
+  sudo docker cp -a "$backup/alerts.db" librecosta-uptime:/data/alerts.db
+fi
+docker start librecosta-uptime
+curl --fail http://127.0.0.1:18580/readyz
+```
+
+The `-a` copies preserve UID/GID 65532 and mode 0600 from the backup above.
+For a prepared bind mount, restore both files with
+`sudo install -m 0600 -o 65532 -g 65532` while stopped. Docker Desktop
+users must preserve equivalent ownership inside the Linux volume; Windows file
+permissions alone do not establish container ownership.
+
 For Redis, reads may run online but are not a cross-call snapshot; coordinate all
-writers before removing a service. Redis backup belongs to the Redis operator.
+writers before removing a service. Alert state uses the independent
+`<storage.redis.key_prefix>:alerts:v1:` namespace in the same configured database.
+Back up monitoring and alert keys together using Redis's own RDB/AOF and restore
+procedures, coordinated with its operator. Neither a bbolt copy nor a service
+export backs up Redis; there is no application backup or migration job.
 
 To upgrade, pull the chosen version from GHCR and verify its version with
 `docker run --rm <image> version`. Stop, back up, then

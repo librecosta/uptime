@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3/log"
 	"github.com/librecosta/uptime/internal/alerts"
 	"github.com/librecosta/uptime/internal/config"
 	"github.com/librecosta/uptime/internal/notify"
@@ -489,7 +491,16 @@ func TestDeliveryFailureDoesNotAffectMonitoring(t *testing.T) {
 		return len(tasks) == 1 && tasks[0].Attempts == 1 && tasks[0].Status == alerts.TaskPending && tasks[0].LastErrorCode == alerts.ErrorUnavailable
 	})
 	r.health(t, "/readyz", 200, "ready\n")
+	r.health(t, "/livez", 200, "ok\n")
 	poll(t, func() bool { return probes.Load() >= 3 })
+	response, err := r.client.Get(r.base + cfg.UI.Path)
+	must(t, err)
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	must(t, err)
+	if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Type"), "text/html") || len(body) == 0 {
+		t.Fatal("notification failure broke dashboard HTML")
+	}
 	if _, ok := r.snapshot(cfg.UI.Path); !ok {
 		t.Fatal("notification failure broke dashboard")
 	}
@@ -527,6 +538,50 @@ func TestAlertDisabledHasNoDeliverySideEffects(t *testing.T) {
 type deliveryTransport func(*http.Request) (*http.Response, error)
 
 func (f deliveryTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDeliveryLogsExcludeCredentials(t *testing.T) {
+	const token = "private-hook-token"
+	const bearer = "private-bearer-token"
+	const secret = "private-feishu-secret"
+	for _, adapter := range []string{"webhook", "feishu"} {
+		t.Run(adapter, func(t *testing.T) {
+			var output bytes.Buffer
+			log.SetOutput(&output)
+			defer log.SetOutput(os.Stderr)
+			store := testAlertBbolt(t)
+			pendingIncident(t, store, "safe-log", "api", "ops")
+			d, err := newDeliveryWorker(store, config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}})
+			must(t, err)
+			d.now = func() time.Time { return deliveryTime }
+			opts := notify.Options{Now: d.now, Client: &http.Client{Transport: deliveryTransport(func(r *http.Request) (*http.Response, error) {
+				// Real HTTP errors can include the destination; never log them verbatim.
+				return nil, fmt.Errorf("transport failure: %s %s %s", r.URL, bearer, secret)
+			})}}
+			if adapter == "webhook" {
+				sender, err := notify.NewWebhook(notify.WebhookConfig{URL: "https://example.invalid/hook?token=" + token, BearerToken: bearer}, opts)
+				must(t, err)
+				defer sender.CloseIdleConnections()
+				d.senders["ops"] = sender
+			} else {
+				sender, err := notify.NewFeishu(notify.FeishuConfig{URL: "https://open.feishu.cn/open-apis/bot/v2/hook/" + token, Secret: secret}, opts)
+				must(t, err)
+				defer sender.CloseIdleConnections()
+				d.senders["ops"] = sender
+			}
+			d.scan(t.Context())
+			task := taskForTest(t, store, alerts.Down, "ops")
+			text := output.String()
+			if task.LastErrorCode != alerts.ErrorNetwork || !strings.Contains(text, task.EventID) || !strings.Contains(text, `channel="ops"`) || !strings.Contains(text, "code=network") {
+				t.Fatal("delivery warning omitted safe identifiers/classification")
+			}
+			for _, value := range []string{token, bearer, secret, "https://", "transport failure"} {
+				if strings.Contains(text, value) {
+					t.Fatal("delivery log exposed destination or credentials")
+				}
+			}
+		})
+	}
+}
 
 func TestDeliveryPersistsAdapterClassifications(t *testing.T) {
 	for _, status := range []int{204, 408, 429, 503, 401, 0} {

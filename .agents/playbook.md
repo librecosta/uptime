@@ -198,7 +198,8 @@ bash deploy/docker/smoke.sh librecosta-uptime:dev-amd64 "$(git rev-parse HEAD)"
 
 Smoke requires Bash, curl, tar and an amd64 Linux Docker host. It checks version,
 help/config, CA roots, runtime contents, missing config, non-root named-volume
-initialization, health/root redirect, graceful stop, detached data after container
+initialization of both uptime.db and alerts.db (UID/GID 65532, mode 0600),
+health/root redirect, graceful stop, detached data after container
 replacement, and read-only storage failure. It traps exit/signals to remove only
 its unique containers, volume and temporary files. Verify cleanup if interrupted;
 never prune unrelated Docker resources. No ARM64 execution or QEMU is required.
