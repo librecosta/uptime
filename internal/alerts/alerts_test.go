@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -364,5 +365,392 @@ func TestEngineConcurrent(t *testing.T) {
 	must(t, err)
 	if len(tasks) != 1 {
 		t.Fatal("concurrent observations duplicated DOWN")
+	}
+}
+
+func TestRetryTime(t *testing.T) {
+	want := []time.Duration{10, 20, 40, 80, 160, 320, 640, 1280, 1800}
+	for n, seconds := range want {
+		next, err := RetryTime(n+1, testTime, time.Time{})
+		must(t, err)
+		if !next.Equal(testTime.Add(seconds * time.Second)) {
+			t.Fatalf("attempt %d: %v", n+1, next)
+		}
+	}
+	next, err := RetryTime(MaxAttempts, testTime, testTime.Add(time.Hour))
+	must(t, err)
+	if !next.IsZero() {
+		t.Fatal("exhausted retry scheduled again")
+	}
+	for _, hint := range []time.Time{testTime.Add(time.Hour), testTime.Add(time.Second)} {
+		next, err := RetryTime(1, testTime, hint)
+		must(t, err)
+		if next != maxTime(testTime.Add(10*time.Second), hint) {
+			t.Fatal("adapter retry bound lost")
+		}
+	}
+	for _, n := range []int{-1, 0, 11, 1000000} {
+		if _, err := RetryTime(n, testTime, time.Time{}); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid count accepted")
+		}
+	}
+	for _, at := range []time.Time{{}, time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)} {
+		if _, err := RetryTime(1, at, time.Time{}); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid retry time accepted")
+		}
+	}
+	if _, err := RetryTime(1, testTime, testTime.Add(-time.Second)); !errors.Is(err, ErrInvalid) {
+		t.Fatal("past retry hint accepted")
+	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+type deliveryTestStore interface {
+	Store
+	DeliveryStore
+}
+
+func deliveryOutcome(task Task, status TaskStatus, at time.Time) Outcome {
+	o := Outcome{EventID: task.EventID, AttemptID: fmt.Sprintf("attempt-%d", task.Attempts+1), ExpectedAttempts: task.Attempts, AttemptedAt: at, Status: status}
+	if status != TaskSent {
+		o.ErrorCode = ErrorNetwork
+	}
+	return o
+}
+
+func readTask(t *testing.T, s DeliveryStore, i Incident, kind EventType, channel string) Task {
+	t.Helper()
+	task, err := s.GetTask(context.Background(), eventID(i.ID, kind, channel))
+	must(t, err)
+	if task == nil {
+		t.Fatal("missing task")
+	}
+	return *task
+}
+
+func allDue(t *testing.T, s DeliveryStore, now time.Time, limit int) []Task {
+	t.Helper()
+	q := DueQuery{Now: now, Limit: limit}
+	var tasks []Task
+	for range 1000 {
+		page, err := s.QueryDue(context.Background(), q)
+		must(t, err)
+		if len(page.Tasks) > limit {
+			t.Fatal("unbounded page")
+		}
+		tasks = append(tasks, page.Tasks...)
+		if page.NextCursor == "" {
+			return tasks
+		}
+		if page.NextCursor == q.Cursor {
+			t.Fatal("cursor did not advance")
+		}
+		q.Cursor = page.NextCursor
+	}
+	t.Fatal("pagination did not terminate")
+	return nil
+}
+
+func exerciseDelivery(t *testing.T, s deliveryTestStore) {
+	t.Helper()
+	ctx := context.Background()
+	i := testIncident("delivery", "api")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Second)
+	_, err = s.Apply(ctx, Transition{Recovered, i})
+	must(t, err)
+	if len(allDue(t, s, i.ConfirmedAt.Add(-time.Nanosecond), 1)) != 0 {
+		t.Fatal("future tasks delivered")
+	}
+	due := allDue(t, s, i.RecoveredAt, 1)
+	if len(due) != 2 || due[0].Type != Down || due[1].Type != Down {
+		t.Fatal("recovery did not wait for DOWN")
+	}
+	down := readTask(t, s, i, Down, "a")
+	if down.Attempts != 0 || !down.NextAttemptAt.IsZero() {
+		t.Fatal("initial task defaults")
+	}
+	retry := deliveryOutcome(down, TaskPending, i.ConfirmedAt)
+	retry.RetryAt = i.ConfirmedAt.Add(time.Hour)
+	delayed, err := s.RecordOutcome(ctx, retry)
+	must(t, err)
+	if delayed.Attempts != 1 || delayed.NextAttemptAt != retry.RetryAt || !delayed.FinishedAt.IsZero() {
+		t.Fatal("retry metadata")
+	}
+	_, err = s.RecordOutcome(ctx, retry)
+	must(t, err)
+	conflict := retry
+	conflict.ErrorCode = ErrorTimeout
+	if _, err := s.RecordOutcome(ctx, conflict); !errors.Is(err, ErrConflict) {
+		t.Fatal("conflicting replay accepted")
+	}
+	conflict = retry
+	conflict.AttemptID = "different"
+	if _, err := s.RecordOutcome(ctx, conflict); !errors.Is(err, ErrConflict) {
+		t.Fatal("stale expected count accepted")
+	}
+	tooEarly := deliveryOutcome(delayed, TaskSent, delayed.NextAttemptAt.Add(-time.Nanosecond))
+	if _, err := s.RecordOutcome(ctx, tooEarly); !errors.Is(err, ErrConflict) {
+		t.Fatal("attempt recorded before due time")
+	}
+	reusedID := deliveryOutcome(delayed, TaskSent, delayed.NextAttemptAt)
+	reusedID.AttemptID = retry.AttemptID
+	if _, err := s.RecordOutcome(ctx, reusedID); !errors.Is(err, ErrConflict) {
+		t.Fatal("attempt ID reused at a new count")
+	}
+	recovery := readTask(t, s, i, Recovered, "a")
+	if _, err := s.RecordOutcome(ctx, deliveryOutcome(recovery, TaskSent, retry.RetryAt)); !errors.Is(err, ErrConflict) {
+		t.Fatal("blocked recovery updated")
+	}
+	if len(allDue(t, s, retry.RetryAt.Add(-time.Nanosecond), 1)) != 1 {
+		t.Fatal("retry was due early")
+	}
+	sent, err := s.RecordOutcome(ctx, deliveryOutcome(delayed, TaskSent, delayed.NextAttemptAt))
+	must(t, err)
+	if sent.Status != TaskSent || sent.Attempts != 2 || !sent.NextAttemptAt.IsZero() || sent.FinishedAt != delayed.NextAttemptAt || sent.LastErrorCode != "" {
+		t.Fatal("SENT metadata")
+	}
+	old, err := s.RecordOutcome(ctx, retry)
+	must(t, err)
+	if old.Status != TaskSent || old.Attempts != 2 {
+		t.Fatal("old duplicate rewound task")
+	}
+	zoneReplay := retry
+	zoneReplay.AttemptedAt = zoneReplay.AttemptedAt.In(time.FixedZone("offset", 3600))
+	_, err = s.RecordOutcome(ctx, zoneReplay)
+	must(t, err)
+	matched, err := sent.HasOutcome(retry)
+	must(t, err)
+	if !matched {
+		t.Fatal("read-back did not recognize older outcome")
+	}
+	matched, err = sent.HasOutcome(conflict)
+	must(t, err)
+	if matched {
+		t.Fatal("read-back accepted conflicting result")
+	}
+	if _, err := s.RecordOutcome(ctx, deliveryOutcome(sent, TaskPending, sent.FinishedAt)); !errors.Is(err, ErrConflict) {
+		t.Fatal("terminal task reopened")
+	}
+	due = allDue(t, s, sent.FinishedAt, 1)
+	if len(due) != 2 {
+		t.Fatal("sent DOWN did not release its recovery")
+	}
+	_, err = s.RecordOutcome(ctx, deliveryOutcome(recovery, TaskSent, sent.FinishedAt))
+	must(t, err)
+	downB := readTask(t, s, i, Down, "b")
+	_, err = s.RecordOutcome(ctx, deliveryOutcome(downB, TaskFailed, sent.FinishedAt))
+	must(t, err)
+	skipped := readTask(t, s, i, Recovered, "b")
+	if skipped.Status != TaskSkipped || skipped.Attempts != 0 || skipped.LastAttemptID != "" || skipped.LastErrorCode != ErrorDependencyFailed || skipped.FinishedAt != sent.FinishedAt {
+		t.Fatal("dependent recovery not skipped atomically")
+	}
+	if len(allDue(t, s, sent.FinishedAt.Add(time.Hour), 1)) != 0 {
+		t.Fatal("terminal tasks returned")
+	}
+	if _, err := s.RecordOutcome(ctx, deliveryOutcome(skipped, TaskSent, skipped.FinishedAt)); !errors.Is(err, ErrConflict) {
+		t.Fatal("SKIPPED reopened")
+	}
+	// Fail DOWN before creating RECOVERED, including an explicitly skipped DOWN.
+	for _, status := range []TaskStatus{TaskFailed, TaskSkipped} {
+		later := testIncident(string(status), string(status))
+		_, err = s.Apply(ctx, Transition{Down, later})
+		must(t, err)
+		task := readTask(t, s, later, Down, "a")
+		_, err = s.RecordOutcome(ctx, deliveryOutcome(task, status, later.ConfirmedAt))
+		must(t, err)
+		later.RecoveredAt = later.ConfirmedAt.Add(time.Minute)
+		_, err = s.Apply(ctx, Transition{Recovered, later})
+		must(t, err)
+		if task := readTask(t, s, later, Recovered, "a"); task.Status != TaskSkipped || task.FinishedAt != later.RecoveredAt {
+			t.Fatal("late recovery did not inherit terminal dependency")
+		}
+		if task := readTask(t, s, later, Recovered, "b"); task.Status != TaskPending {
+			t.Fatal("skip crossed channels")
+		}
+	}
+	// Exhaust ten attempts and skip an already-created recovery in the same write.
+	exhausted := testIncident("exhausted", "exhausted")
+	exhausted.ChannelIDs = []string{"a"}
+	_, err = s.Apply(ctx, Transition{Down, exhausted})
+	must(t, err)
+	exhausted.RecoveredAt = exhausted.ConfirmedAt.Add(time.Second)
+	_, err = s.Apply(ctx, Transition{Recovered, exhausted})
+	must(t, err)
+	task := readTask(t, s, exhausted, Down, "a")
+	for n := 1; n <= MaxAttempts; n++ {
+		task, err = s.RecordOutcome(ctx, deliveryOutcome(task, TaskPending, dueAt(task)))
+		must(t, err)
+		if task.Attempts != n || (task.Status == TaskFailed) != (n == MaxAttempts) {
+			t.Fatal("retry exhaustion")
+		}
+	}
+	if !task.NextAttemptAt.IsZero() || readTask(t, s, exhausted, Recovered, "a").Status != TaskSkipped {
+		t.Fatal("exhaustion did not skip recovery")
+	}
+	if _, err := s.RecordOutcome(ctx, deliveryOutcome(task, TaskSent, task.FinishedAt)); !errors.Is(err, ErrInvalid) {
+		t.Fatal("eleventh attempt accepted")
+	}
+	missing, err := s.GetTask(ctx, "missing")
+	must(t, err)
+	if missing != nil {
+		t.Fatal("invented task")
+	}
+	unknown := retry
+	unknown.EventID = eventID("missing", Down, "a")
+	if _, err := s.RecordOutcome(ctx, unknown); !errors.Is(err, ErrNotFound) {
+		t.Fatal("unknown outcome accepted")
+	}
+	for _, code := range []ErrorCode{"https://PRIVATE", "token=PRIVATE", "raw error\nPRIVATE"} {
+		invalid := retry
+		invalid.ErrorCode = code
+		if _, err := s.RecordOutcome(ctx, invalid); !errors.Is(err, ErrInvalid) {
+			t.Fatal("unsafe error code accepted")
+		}
+	}
+	for _, q := range []DueQuery{{Now: testTime, Limit: 0}, {Now: testTime, Limit: MaxDuePageSize + 1}, {Limit: 1}, {Now: testTime, Limit: 1, Cursor: "invalid"}} {
+		if _, err := s.QueryDue(ctx, q); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid page query accepted")
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.GetTask(ctx, down.EventID); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled task read accepted")
+	}
+	if _, err := s.QueryDue(ctx, DueQuery{Now: testTime, Limit: 1}); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled page accepted")
+	}
+	if _, err := s.RecordOutcome(ctx, retry); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled outcome accepted")
+	}
+}
+
+func TestBboltDelivery(t *testing.T) { t.Parallel(); exerciseDelivery(t, testBbolt(t)) }
+
+func exerciseDeliveryConcurrency(t *testing.T, s deliveryTestStore) {
+	t.Helper()
+	ctx := context.Background()
+	i := testIncident("concurrent-delivery", "api")
+	i.ChannelIDs = []string{"a"}
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	task := readTask(t, s, i, Down, "a")
+	var wg sync.WaitGroup
+	winners := make(chan Outcome, 12)
+	for n := range 12 {
+		wg.Go(func() {
+			o := deliveryOutcome(task, TaskFailed, i.ConfirmedAt)
+			o.AttemptID = fmt.Sprintf("racer-%d", n)
+			_, err := s.RecordOutcome(ctx, o)
+			if err == nil {
+				winners <- o
+			} else if !errors.Is(err, ErrConflict) {
+				t.Error(err)
+			}
+		})
+	}
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Second)
+	wg.Go(func() {
+		_, err := s.Apply(ctx, Transition{Recovered, i})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Wait()
+	close(winners)
+	if len(winners) != 1 {
+		t.Fatal("conditional update had multiple winners")
+	}
+	winner := <-winners
+	for range 12 {
+		wg.Go(func() {
+			_, err := s.RecordOutcome(ctx, winner)
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if readTask(t, s, i, Down, "a").Attempts != 1 || readTask(t, s, i, Recovered, "a").Status != TaskSkipped {
+		t.Fatal("concurrent recovery escaped skip or duplicated attempt")
+	}
+}
+
+func TestBboltDeliveryConcurrency(t *testing.T) {
+	t.Parallel()
+	exerciseDeliveryConcurrency(t, testBbolt(t))
+}
+
+// Deliberately omit every C1 field instead of marshaling the current Task type.
+func legacyTaskJSON(t *testing.T, task Task) []byte {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"event_id": task.EventID, "incident_id": task.IncidentID, "channel_id": task.ChannelID, "type": task.Type, "occurred_at": task.OccurredAt, "status": "PENDING"})
+	must(t, err)
+	return data
+}
+
+type uncertainDelivery struct {
+	DeliveryStore
+	before, after, read bool
+}
+
+func (s *uncertainDelivery) RecordOutcome(ctx context.Context, o Outcome) (Task, error) {
+	if s.before {
+		return Task{}, errInjected
+	}
+	task, err := s.DeliveryStore.RecordOutcome(ctx, o)
+	if err == nil && s.after {
+		return Task{}, errInjected
+	}
+	return task, err
+}
+
+func (s *uncertainDelivery) GetTask(ctx context.Context, id string) (*Task, error) {
+	if s.read {
+		return nil, errInjected
+	}
+	return s.DeliveryStore.GetTask(ctx, id)
+}
+
+func TestDeliveryReconciliation(t *testing.T) {
+	t.Parallel()
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprint(committed), func(t *testing.T) {
+			store := testBbolt(t)
+			i := testIncident("uncertain-outcome", "api")
+			_, err := store.Apply(context.Background(), Transition{Down, i})
+			must(t, err)
+			task := readTask(t, store, i, Down, "a")
+			o := deliveryOutcome(task, TaskPending, i.ConfirmedAt)
+			s := &uncertainDelivery{DeliveryStore: store, before: !committed, after: committed, read: true}
+			if _, err := s.RecordOutcome(context.Background(), o); !errors.Is(err, errInjected) {
+				t.Fatal("lost write failure")
+			}
+			if _, err := s.GetTask(context.Background(), task.EventID); !errors.Is(err, errInjected) {
+				t.Fatal("unavailable read misreported")
+			}
+			s.read = false
+			observed, err := s.GetTask(context.Background(), task.EventID)
+			must(t, err)
+			found, err := observed.HasOutcome(o)
+			must(t, err)
+			if found != committed {
+				t.Fatal("uncertain outcome misclassified")
+			}
+			s.before, s.after = false, false
+			retried, err := s.RecordOutcome(context.Background(), o)
+			must(t, err)
+			if retried.Attempts != 1 {
+				t.Fatal("reconciliation duplicated attempt")
+			}
+		})
 	}
 }

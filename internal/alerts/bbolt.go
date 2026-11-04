@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -202,6 +203,16 @@ func (s *BboltStore) Apply(ctx context.Context, change Transition) (result Incid
 			return err
 		}
 		for _, task := range tasks {
+			if task.Type == Recovered {
+				down, err := boltTask(outbox, eventID(task.IncidentID, Down, task.ChannelID))
+				if err != nil {
+					return err
+				}
+				task, err = skipRecovery(task, down)
+				if err != nil {
+					return err
+				}
+			}
 			data, err := json.Marshal(task)
 			if err != nil {
 				return err
@@ -214,6 +225,150 @@ func (s *BboltStore) Apply(ctx context.Context, change Transition) (result Incid
 			}
 		}
 		return nil
+	})
+	return result, err
+}
+
+var _ DeliveryStore = (*BboltStore)(nil)
+
+func boltTask(bucket *bolt.Bucket, id string) (*Task, error) {
+	data := bucket.Get([]byte(id))
+	if data == nil {
+		return nil, nil
+	}
+	task, err := decodeTask(data)
+	if err != nil {
+		return nil, err
+	}
+	if task.EventID != id {
+		return nil, ErrInvalid
+	}
+	return &task, nil
+}
+
+// GetTask reads current delivery state and replay receipts by EventID.
+func (s *BboltStore) GetTask(ctx context.Context, id string) (result *Task, err error) {
+	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		result, err = boltTask(tx.Bucket([]byte("outbox")), id)
+		return err
+	})
+	return result, err
+}
+
+// QueryDue evaluates at most Limit records in key order. Its cursor names the
+// last scanned key, including tasks that were not due or dependency-ready.
+func (s *BboltStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error) {
+	if err := validateQuery(q); err != nil {
+		return TaskPage{}, err
+	}
+	if q.Cursor != "" {
+		if b, err := hex.DecodeString(q.Cursor); err != nil || len(b) != 32 {
+			return TaskPage{}, ErrInvalid
+		}
+	}
+	var page TaskPage
+	err := s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("outbox"))
+		cursor := bucket.Cursor()
+		key, value := cursor.First()
+		if q.Cursor != "" {
+			key, value = cursor.Seek([]byte(q.Cursor))
+			if string(key) == q.Cursor {
+				key, value = cursor.Next()
+			}
+		}
+		for n := 0; key != nil && n < q.Limit; n++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			task, err := decodeTask(value)
+			if err != nil {
+				return err
+			}
+			if task.EventID != string(key) {
+				return ErrInvalid
+			}
+			var down *Task
+			if task.Type == Recovered && task.Status == TaskPending {
+				down, err = boltTask(bucket, eventID(task.IncidentID, Down, task.ChannelID))
+				if err != nil {
+					return err
+				}
+				if down == nil {
+					return ErrInvalid
+				}
+			}
+			if deliverable(task, down, q.Now) {
+				page.Tasks = append(page.Tasks, task)
+			}
+			page.NextCursor = string(key)
+			key, value = cursor.Next()
+		}
+		if key == nil {
+			page.NextCursor = ""
+		}
+		return nil
+	})
+	if err != nil {
+		return TaskPage{}, err
+	}
+	return page, nil
+}
+
+// RecordOutcome atomically persists a conditional attempt and any dependent
+// recovery skip. Errors may leave commit status unknown; GetTask permits read-back.
+func (s *BboltStore) RecordOutcome(ctx context.Context, o Outcome) (result Task, err error) {
+	if _, _, err := normalizeOutcome(o); err != nil {
+		return Task{}, err
+	}
+	err = s.transaction(ctx, true, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("outbox"))
+		task, err := boltTask(bucket, o.EventID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return ErrNotFound
+		}
+		var down *Task
+		if task.Type == Recovered {
+			down, err = boltTask(bucket, eventID(task.IncidentID, Down, task.ChannelID))
+			if err != nil {
+				return err
+			}
+			if down == nil {
+				return ErrInvalid
+			}
+		}
+		var changed bool
+		result, changed, err = prepareOutcome(*task, down, o)
+		if err != nil || !changed {
+			return err
+		}
+		if result.Type == Down && (result.Status == TaskFailed || result.Status == TaskSkipped) {
+			recovery, err := boltTask(bucket, eventID(result.IncidentID, Recovered, result.ChannelID))
+			if err != nil {
+				return err
+			}
+			if recovery != nil {
+				skipped, err := skipRecovery(*recovery, &result)
+				if err != nil {
+					return err
+				}
+				data, err := json.Marshal(skipped)
+				if err != nil {
+					return err
+				}
+				if err := bucket.Put([]byte(skipped.EventID), data); err != nil {
+					return err
+				}
+			}
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(result.EventID), data)
 	})
 	return result, err
 }

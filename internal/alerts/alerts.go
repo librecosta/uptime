@@ -66,14 +66,23 @@ type Incident struct {
 	ChannelIDs     []string  `json:"channel_ids"`
 }
 
-// Task is a simulated outbox entry. B1 only creates PENDING tasks.
+// Task is a durable outbox entry. Creation and delivery state updates are separate;
+// neither operation sends notifications. Zero delivery fields represent old B1/B2
+// PENDING records, immediately due at OccurredAt.
 type Task struct {
-	EventID    string    `json:"event_id"`
-	IncidentID string    `json:"incident_id"`
-	ChannelID  string    `json:"channel_id"`
-	Type       EventType `json:"type"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Status     string    `json:"status"`
+	EventID         string           `json:"event_id"`
+	IncidentID      string           `json:"incident_id"`
+	ChannelID       string           `json:"channel_id"`
+	Type            EventType        `json:"type"`
+	OccurredAt      time.Time        `json:"occurred_at"`
+	Status          TaskStatus       `json:"status"`
+	Attempts        int              `json:"attempts,omitempty"` // Accepted outcomes; dependency skips do not increment.
+	NextAttemptAt   time.Time        `json:"next_attempt_at,omitzero"`
+	LastAttemptAt   time.Time        `json:"last_attempt_at,omitzero"`
+	FinishedAt      time.Time        `json:"finished_at,omitzero"`
+	LastErrorCode   ErrorCode        `json:"last_error_code,omitempty"`
+	LastAttemptID   string           `json:"last_attempt_id,omitempty"`
+	AttemptReceipts []AttemptReceipt `json:"attempt_receipts,omitempty"`
 }
 
 // Transition atomically persists Incident and its derived per-channel tasks.
@@ -321,8 +330,7 @@ func prepare(existing *Incident, activeID string, change Transition) (Incident, 
 	}
 	tasks := make([]Task, 0, len(i.ChannelIDs))
 	for _, channel := range i.ChannelIDs {
-		sum := sha256.Sum256([]byte(i.ID + "\x00" + string(change.Type) + "\x00" + channel))
-		tasks = append(tasks, Task{EventID: hex.EncodeToString(sum[:]), IncidentID: i.ID, ChannelID: channel, Type: change.Type, OccurredAt: at, Status: "PENDING"})
+		tasks = append(tasks, Task{EventID: eventID(i.ID, change.Type, channel), IncidentID: i.ID, ChannelID: channel, Type: change.Type, OccurredAt: at, Status: TaskPending})
 	}
 	// A non-nil empty slice still denotes a new transition with no channels.
 	return i, tasks, nil
@@ -347,8 +355,13 @@ func decodeTask(data []byte) (Task, error) {
 	if err := json.Unmarshal(data, &task); err != nil {
 		return task, ErrInvalid
 	}
-	if task.Status != "PENDING" || task.EventID == "" || task.IncidentID == "" || !channelPattern.MatchString(task.ChannelID) || (task.Type != Down && task.Type != Recovered) || task.OccurredAt.IsZero() {
+	if err := validateTask(task); err != nil {
 		return Task{}, ErrInvalid
 	}
 	return task, nil
+}
+
+func eventID(incident string, kind EventType, channel string) string {
+	sum := sha256.Sum256([]byte(incident + "\x00" + string(kind) + "\x00" + channel))
+	return hex.EncodeToString(sum[:])
 }

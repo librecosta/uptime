@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Internal delivery persistence for PENDING/SENT/FAILED/SKIPPED outbox tasks,
+  conditional attempt receipts and read-back reconciliation, bounded due-task
+  queries, pure capped exponential backoff, and atomic DOWN/RECOVERED dependency
+  handling in bbolt and Redis. Existing alert Schema v1 records remain readable;
+  no delivery worker, real notifications, channel configuration or dependencies
+  are introduced.
+
 - Internal alert state machine, durable incidents and simulated PENDING outbox
   with independent bbolt/Redis persistence, separate from monitoring history.
 

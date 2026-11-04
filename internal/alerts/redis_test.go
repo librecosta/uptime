@@ -171,3 +171,91 @@ func TestRedisIntegrationAlertsUncertainCommit(t *testing.T) {
 		t.Fatal("uncertain recovery duplicated tasks")
 	}
 }
+
+func TestRedisIntegrationDelivery(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseDelivery(t, s)
+}
+
+func TestRedisIntegrationDeliveryConcurrency(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseDeliveryConcurrency(t, s)
+}
+
+func TestRedisIntegrationDeliveryLegacyAndUncertainCommit(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := context.Background()
+	i := testIncident("legacy-outcome", "api")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	task := readTask(t, s, i, Down, "a")
+	must(t, client.HSet(ctx, s.outbox, task.EventID, legacyTaskJSON(t, task)).Err())
+	hook := &lostExecReply{}
+	client.AddHook(hook)
+	o := deliveryOutcome(task, TaskPending, i.ConfirmedAt)
+	hook.fail.Store(true)
+	if _, err := s.RecordOutcome(ctx, o); !errors.Is(err, errInjected) {
+		t.Fatal("lost EXEC response was hidden")
+	}
+	// Recreate the store as on restart, borrowing the same owned client.
+	reopened, err := NewRedisStore(client, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	persisted := readTask(t, reopened, i, Down, "a")
+	matched, err := persisted.HasOutcome(o)
+	must(t, err)
+	if !matched || persisted.Attempts != 1 {
+		t.Fatal("lost response was not reconcilable after reopening")
+	}
+	_, err = reopened.RecordOutcome(ctx, o)
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Second)
+	_, err = reopened.Apply(ctx, Transition{Recovered, i})
+	must(t, err)
+	failed := deliveryOutcome(persisted, TaskFailed, persisted.NextAttemptAt)
+	hook.fail.Store(true)
+	if _, err := reopened.RecordOutcome(ctx, failed); !errors.Is(err, errInjected) {
+		t.Fatal("missing lost failed-outcome response")
+	}
+	if readTask(t, reopened, i, Recovered, "a").Status != TaskSkipped {
+		t.Fatal("lost response left partial skip")
+	}
+	_, err = reopened.RecordOutcome(ctx, failed)
+	must(t, err)
+	if readTask(t, reopened, i, Down, "a").Attempts != 2 {
+		t.Fatal("replayed outcome incremented attempts")
+	}
+	other, _ := alertRedis(t)
+	if task, err := other.GetTask(ctx, persisted.EventID); err != nil || task != nil {
+		t.Fatal("task query crossed namespaces")
+	}
+	if len(allDue(t, other, testTime.Add(time.Hour), 1)) != 0 {
+		t.Fatal("due query crossed namespaces")
+	}
+	for _, key := range []string{s.incidents, s.active, s.outbox} {
+		ttl, err := client.TTL(ctx, key).Result()
+		must(t, err)
+		if ttl != -1 {
+			t.Fatal("delivery introduced a TTL")
+		}
+	}
+}
+
+func TestRedisIntegrationDeliveryAtomicFailure(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := context.Background()
+	i := testIncident("delivery-rollback", "api")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Second)
+	_, err = s.Apply(ctx, Transition{Recovered, i})
+	must(t, err)
+	down := readTask(t, s, i, Down, "a")
+	id := eventID(i.ID, Recovered, "a")
+	must(t, client.HSet(ctx, s.outbox, id, "corrupt SECRET data").Err())
+	if _, err := s.RecordOutcome(ctx, deliveryOutcome(down, TaskFailed, i.RecoveredAt)); !errors.Is(err, ErrInvalid) {
+		t.Fatal("invalid recovery accepted")
+	}
+	if task := readTask(t, s, i, Down, "a"); task.Attempts != 0 || task.Status != TaskPending {
+		t.Fatal("partial Redis outcome")
+	}
+}
