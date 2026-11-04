@@ -225,6 +225,15 @@ requires equality with freshly fetched `origin/master` HEAD and the event checko
 Before building or enabling publishing jobs, it requires a nonempty
 `docs/releases/<version>.md` in that commit. Every version must provide reviewed
 release notes there; Release creation reads this file instead of generating notes.
+
+Public release notes must be short and user-facing: summarize meaningful changes
+in one sentence and at most a few bullets, with one brief upgrade caveat only
+when necessary. Avoid build/CI/verification results, implementation internals,
+file inventories, repetitive installation instructions, and self-referential
+release-download sections. Keep operational details in docs/deployment,
+engineering detail in contracts/CHANGELOG, and release assets attached by CI.
+Do not include a redundant Markdown H1; the GitHub Release title names the
+version. Never auto-generate release notes from commit logs or PR descriptions.
 It builds with the go.mod toolchain using `tools/dist`, runs `--verify`, checks
 SHA256SUMS, and smoke-tests the Linux amd64 binary. It rechecks refs before enabling writers.
 
