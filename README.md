@@ -115,6 +115,25 @@ by the certificate. For Basic Auth, enable `auth.enabled` and supply its usernam
 and **bcrypt password hash**, never a plaintext password. For non-ASCII passwords,
 hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 
+## Alerts (v0.2.0 development)
+
+The `develop` branch adds optional DOWN/RECOVERED notifications through Generic
+HTTP Webhook or Feishu/Lark custom bots; these are not part of the v0.1.0 downloads
+above. Start with the [development example](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml).
+Enable `alerts.enabled`, define stable channel IDs in `alerts.channels`, and
+optionally select `alert_channels` for each endpoint. Omission selects all channels;
+`[]` sends none. One success resolves an incident after the configured consecutive
+failure threshold (default three). Restart to apply configuration changes.
+
+Run **one alert executor per database/Redis prefix**. Incidents and delivery tasks
+persist separately from monitoring history: bbolt uses a sibling `alerts.db`, which
+must be included in offline backups. Delivery uses at-least-once semantics with up
+to ten attempts; crashes or uncertain responses can cause duplicate messages, and
+delivery is not guaranteed. Webhook receivers should deduplicate by EventID. Removing a
+channel leaves its pending tasks waiting; keep its ID/configuration available for
+historical incidents. See the [alert contract](https://github.com/librecosta/uptime/blob/develop/contracts/alerts.md)
+for retry, security and ownership constraints.
+
 ## Service Management
 
 **Stop `serve` before using any service command with bbolt.** The database must

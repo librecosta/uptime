@@ -55,7 +55,7 @@ explicitly select `GOTOOLCHAIN=go1.26.10` for a matching distribution build
 (PowerShell: `$env:GOTOOLCHAIN = 'go1.26.10'`). Check `go version` before building.
 
 For storage/runtime changes also run `make race`
-(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./internal/alerts/... ./cmd/uptime/...`).
+(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./internal/alerts/... ./internal/notify/... ./cmd/uptime/...`).
 It is separate from `make check` and has a dedicated Go 1.27.x Ubuntu CI job.
 The race detector requires a supported platform and C compiler; report local
 limitations rather than claiming an unavailable run passed.

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/librecosta/uptime/internal/alerts"
@@ -22,12 +23,9 @@ var _ Sender = (*Webhook)(nil)
 // NewWebhook validates configuration without network I/O. Bearer credentials
 // require HTTPS except for literal loopback addresses or localhost.
 func NewWebhook(cfg WebhookConfig, opts Options) (*Webhook, error) {
-	u, err := destination(cfg.URL)
+	u, err := cfg.destination()
 	if err != nil {
 		return nil, err
-	}
-	if cfg.BearerToken != "" && (len(cfg.BearerToken) > 4096 || !bearerToken.MatchString(cfg.BearerToken) || u.Scheme != "https" && !localHost(u.Hostname())) {
-		return nil, ErrInvalidConfig
 	}
 	client, err := newClient(opts)
 	if err != nil {
@@ -35,6 +33,23 @@ func NewWebhook(cfg WebhookConfig, opts Options) (*Webhook, error) {
 	}
 	return &Webhook{client: client, url: u.String(), token: cfg.BearerToken}, nil
 }
+
+// Validate checks destination and credentials without creating an HTTP client.
+func (cfg WebhookConfig) Validate() error { _, err := cfg.destination(); return err }
+
+func (cfg WebhookConfig) destination() (*url.URL, error) {
+	u, err := destination(cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.BearerToken != "" && (len(cfg.BearerToken) > 4096 || !bearerToken.MatchString(cfg.BearerToken) || u.Scheme != "https" && !localHost(u.Hostname())) {
+		return nil, ErrInvalidConfig
+	}
+	return u, nil
+}
+
+// CloseIdleConnections releases idle connections after all Send calls finish.
+func (s *Webhook) CloseIdleConnections() { s.client.http.CloseIdleConnections() }
 
 type webhookPayload struct {
 	SchemaVersion  int              `json:"schema_version"`

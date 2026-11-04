@@ -198,6 +198,19 @@ func TestRedisIntegrationAlertRuntime(t *testing.T) {
 	must(t, owner.Ping(context.Background()))
 }
 
+func TestRedisIntegrationAlertDelivery(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	var success atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !success.Load() {
+			w.WriteHeader(500)
+		}
+	}))
+	defer target.Close()
+	cfg := redisIntegrationConfig(t, redisURL, redisIntegrationPrefix(t, redisURL), "target", target.URL)
+	exerciseAlertDelivery(t, cfg, &success)
+}
+
 func TestRedisIntegrationAlertStartupFailure(t *testing.T) {
 	redisURL := redisIntegrationURL(t)
 	for _, suffix := range []string{"incidents", "active", "outbox"} {

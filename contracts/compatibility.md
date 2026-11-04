@@ -122,7 +122,7 @@ login, push or release, and do not alter P7-A's archive contract.
 ## YAML Configuration (P2)
 
 The [official example](../configs/uptime.example.yaml) shows the supported keys.
-The root sections are `server`, `storage`, `uptime`, `ui`, `auth`, and `endpoints`.
+The root sections are `server`, `storage`, `uptime`, `alerts`, `ui`, `auth`, and `endpoints`.
 YAML v3 decoding is strict throughout, including inactive branches: unknown and
 duplicate keys, multiple documents, wrong scalar/container types, explicit null,
 and merge keys fail. Use omission for defaults and `""`/`[]`/`{}` for intentional
@@ -151,6 +151,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `uptime.retention`, `uptime.window` | `90d`, `30d` |
 | `uptime.timezone` | `UTC` |
 | `alerts.enabled`, `alerts.consecutive_failures` | `false`, `3` |
+| `alerts.channels`, endpoint `alert_channels` | no channels; all defined channels when alerts are enabled |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
 | `ui.description` | `Current service availability.` |
 | `ui.footer` | `Powered by LibreCosta Uptime.` |
@@ -176,10 +177,14 @@ Malformed `${...}` expressions fail. Other dollar signs remain literal, includin
 
 Allowed fields: server address/shutdown timeout, active TLS paths, active bbolt
 path or Redis URL/prefix, uptime interval/retention/window/timezone, UI strings,
-active auth username/hash, endpoint name/description/URL/interval/timeout, and
-header values. Storage type, endpoint ID/method, header names, booleans, numbers,
-and list/container structure cannot interpolate. Inactive TLS/Auth/storage values
+active auth username/hash, enabled channel URL/token/secret/keyword, endpoint
+name/description/URL/interval/timeout, and header values. Channel ID/type and
+endpoint channel references are literal. Storage type, endpoint ID/method, header
+names, booleans, numbers, and list/container structure cannot interpolate. Inactive TLS/Auth/storage values
 are not expanded or semantically validated and do not survive normalization.
+Disabled alerts likewise skip channel values and routes; active channels skip
+their unselected adapter branch. Configuration checks construct no HTTP clients
+and make no notification requests.
 
 ### Validation and Side Effects
 
@@ -191,7 +196,8 @@ are not expanded or semantically validated and do not survive normalization.
 | Redis prefix | non-empty after env expansion; no leading/trailing colon or whitespace; no control characters; internal colons allowed |
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
 | Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
-| Alerts | optional incident tracking for all endpoints; literal boolean enabled; integer consecutive_failures 1..10, including when disabled; no channel or delivery settings |
+| Alerts | optional incident tracking and delivery; literal boolean enabled; integer consecutive_failures 1..10, including when disabled; unique stable channel IDs and webhook/feishu branches; see [alert contract](alerts.md#configuration-and-delivery-runtime-c3) |
+| Alert routing | when enabled, omission selects all channels, explicit [] selects none, explicit IDs must be unique and defined; confirmation snapshots persist across configuration changes |
 | UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
 | UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
 | Endpoint identity | at least one for serve/config check; maintenance also allows explicit `endpoints: []`; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |

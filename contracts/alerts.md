@@ -1,10 +1,10 @@
-# Alert Contract (v0.2.0-B1/B2/C1/C2)
+# Alert Contract (v0.2.0-B1/B2/C1/C2/C3)
 
 `internal/alerts` is an independent, observation-driven core. `internal/app`
 optionally feeds it upstream endpoint probe results. Alerts are disabled by
 default: ordinary startup creates neither an alert database nor an alert worker.
-`internal/notify` provides independently callable HTTP adapters; the runtime has
-no channel configuration, delivery worker, or management API.
+`internal/notify` provides HTTP adapters; `internal/app` composes optional channel
+configuration and a single delivery worker. There is no management API.
 
 ## State and observations
 
@@ -85,6 +85,9 @@ no channel configuration, delivery worker, or management API.
   does not roll back runtime command errors. Conditional conflicts retry at most
   32 times; network errors are returned for reconciliation, not blindly retried
   by this core. Atomic active reads also verify the watched index/record snapshot.
+  WATCH does not isolate intermediate reads: logical validation errors are checked
+  with a read-only EXEC before returning, so concurrently invalidated conditions
+  retry rather than falsely reporting a stable conflict or corrupt record.
   Server durability still depends on the operator's Redis persistence settings.
 - No alert key has an application TTL. Active incidents and PENDING tasks remain
   until a future explicit policy exists. B1 performs no cleanup, retention sweep,
@@ -96,8 +99,8 @@ no channel configuration, delivery worker, or management API.
 - Optional YAML `alerts.enabled` defaults to false; `consecutive_failures`
   defaults to three and must be an integer 1 through 10, even when disabled.
   Config check remains offline and never opens alert persistence. Enabled alerts
-  apply to every configured endpoint with an empty channel snapshot, so incidents
-  are durable but no outbox tasks are created by the runtime.
+  apply to every configured endpoint, with independently resolved channel policies
+  (an empty snapshot still tracks incidents without creating tasks).
 - The pinned upstream `OnProbeResult` is the only event source. Its callbacks
   are ordered per endpoint and concurrent across endpoints. The adapter assigns
   an endpoint-local sequence before a nonblocking enqueue to a 256-entry channel.
@@ -138,7 +141,7 @@ no channel configuration, delivery worker, or management API.
 - `DeliveryStore` is separate from the incident `Store`: `GetTask(EventID)`,
   `QueryDue(DueQuery)`, and `RecordOutcome(Outcome)`. Both existing backends
   implement it. Nothing in C1 sends notifications, polls the outbox in a worker,
-  claims tasks, or changes B2's empty runtime channel snapshot.
+  claims tasks, or determines the runtime channel policy.
 - Tasks have PENDING, SENT, FAILED, or SKIPPED status. Only PENDING can accept a
   new outcome; terminal states never reopen. Added JSON fields are `attempts`,
   `next_attempt_at`, `last_attempt_at`, `finished_at`, `last_error_code`,
@@ -258,13 +261,71 @@ no channel configuration, delivery worker, or management API.
   applies. Redirects are always rejected, and HTTP failures cannot be rescued by
   a success body. No SDK, OAuth or application-bot behavior is implemented.
 
+## Configuration and delivery runtime (C3)
+
+- Optional `alerts.channels` is a sequence of unique literal IDs matching the
+  existing channel identity grammar. `type` selects `webhook` with nested `url`
+  and optional `bearer_token`, or `feishu` with nested `url`, optional `secret`
+  and `keyword`. Enabled alerts resolve environment variables only in the active
+  adapter branch. Disabled alerts leave channels/routes unresolved and allocate
+  no sender or worker; strict YAML shape/unknown-key checking still applies.
+  Adapter validation is pure and shared with offline configuration checks.
+- Endpoint `alert_channels` omission selects all configured channels, explicit
+  `[]` selects none, and a list must contain unique references to defined IDs.
+  IDs/types/references are literal, not environment templates. Each endpoint has
+  its own Policy; confirmation freezes its channel snapshot. Recovery always
+  reuses that snapshot, even after configuration changes. Never repurpose an ID
+  for an unrelated receiver; old tasks resolve that ID through current config.
+- One worker scans immediately at startup and then once per second. QueryDue
+  uses pages of 50 scanned records and at most eight pages per tick; a pass keeps
+  the same Now/cursor across ticks, including empty pages with a NextCursor.
+  Each candidate is re-read before sending to avoid repeats from stale pages.
+  C1 remains responsible for eligibility, DOWN-before-RECOVERED, conditional
+  outcomes, backoff, ten-attempt exhaustion and dependent skips.
+- Read the associated Incident and use the current endpoint display name, or
+  Endpoint ID if it is no longer configured. A missing sender retains its task
+  unchanged and emits a warning at most once per five seconds. It is never
+  rerouted, marked SENT, skipped or discarded because configuration is missing.
+  Storage/incident-read errors also defer; they are not network outcomes.
+- Each completed Send gets one cryptographically random task-local AttemptID
+  and one immutable Outcome. On a failed RecordOutcome, GetTask/HasOutcome checks
+  its receipt. If still uncertain, retain the identical Outcome in memory and
+  replay only its conditional record on later ticks; no more sends occur until
+  reconciliation succeeds. A storage fault never causes an immediate resend or
+  increments attempts by itself. Cancellation/pre-send validation errors from
+  the adapter return no result and do not create a synthetic attempt.
+- Feishu channels for the same official host/hook path share one rate gate:
+  at most one send per second, without bursts. A later provider RetryAt extends
+  the gate for every channel referencing that bot. Deferral consumes no attempt
+  and does not block other channels. No limiter dependency or sleeping retry
+  loop is introduced. Failure logs contain only quoted task/channel IDs and
+  fixed error classifications; no raw HTTP/storage errors or credentials.
+- Startup opens monitoring/alert persistence, validates and creates senders,
+  prepares ingress and starts the delivery worker before constructing Uptime.
+  Its initial pass resumes persisted PENDING tasks, including detached endpoints.
+  Notification availability never changes readiness, UI or probe behavior.
+- Shutdown first joins upstream probes and drains ingress, then cancels/joins
+  delivery, releases its idle HTTP connections and closes alert storage, finally
+  monitoring storage. Completed sends use an independent, shutdown-timeout-bounded
+  recording context so a racing HTTP cancellation does not erase a result.
+  Workers always exit before database closure; uninterruptible I/O can exceed
+  the timeout. Unfinished delivery tasks remain persisted for the next startup.
+- Delivery has at-least-once semantics with bounded attempts, not exactly-once or
+  guaranteed receipt. A receiver can accept a message before a response is lost,
+  and a crash can lose an unrecorded in-memory Outcome. A later attempt may repeat
+  that message; Generic Webhook receivers should deduplicate stable EventID.
+  SENT means adapter acknowledgement, not a human seeing it. One alert executor
+  must own each bbolt file/Redis namespace; no claims, leases or distributed
+  arbitration are implemented. Back up alerts.db alongside monitoring history
+  while stopped. No schema, TTL or cleanup policy changes accompany C3.
+
 ## Boundary and verification
 
 One alert executor is supported. The engine serializes its calls; both stores
 protect concurrent conditional operations, but this is not leader election,
 leases, voting, a probe scheduler, or a delivery guarantee. Shared Redis writers
-must be coordinated externally. Channel configuration, runtime delivery, retry
-scheduling, routing, and retention scheduling remain outside C2.
+must be coordinated externally. Management APIs, additional channel protocols,
+distributed execution and retention scheduling remain outside C3.
 
 `make check` covers deterministic state and real temporary bbolt tests. `make race`
 includes the alert package and runtime adapter. Runtime tests include real local
@@ -282,3 +343,11 @@ never real external notification services. They cover payloads, stable identity,
 an independent signing vector, result classification, Retry-After, cancellation,
 TLS validation, size limits, resource closure and safe errors. Test the new
 package with the race detector when changing its shared client behavior.
+
+C3 adds offline channel/routing validation, real local probe-to-Webhook delivery
+with both backends, deterministic worker scans/backoff/exhaustion, empty/resumed
+pages, uncertain-outcome reconciliation, missing channels, restart, per-bot limits
+and cancellation/close ordering. Redis tests include a forced recovery between
+watched reads; empty active hashes may be absent (`TTL == -2`), but existing
+incident/outbox hashes must report no TTL (`-1`). Real integration is required
+to accept Redis changes; a skip is not a pass.

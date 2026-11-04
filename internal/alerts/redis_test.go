@@ -52,7 +52,9 @@ func TestRedisIntegrationAlerts(t *testing.T) {
 	for _, key := range []string{s.incidents, s.active, s.outbox} {
 		ttl, err := client.TTL(ctx, key).Result()
 		must(t, err)
-		if ttl != -1 {
+		// Redis deletes a hash when its final field is removed. Only the empty
+		// active index may be absent; durable incidents/tasks must still exist.
+		if ttl != -1 && !(key == s.active && ttl == -2) {
 			t.Fatalf("durable alert key has TTL %v", ttl)
 		}
 	}
@@ -118,6 +120,60 @@ func TestRedisIntegrationAlertsAtomicFailure(t *testing.T) {
 }
 
 type lostExecReply struct{ fail atomic.Bool }
+
+// Force another executor to recover between the incident and active-index reads.
+// The losing reader must revalidate WATCH rather than report a false conflict.
+type interleavedRecovery struct {
+	activeKey string
+	once      atomic.Bool
+	recover   func() error
+}
+
+func (h *interleavedRecovery) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *interleavedRecovery) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h *interleavedRecovery) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "hget" && len(cmd.Args()) > 1 && cmd.Args()[1] == h.activeKey && h.once.CompareAndSwap(false, true) {
+			if err := h.recover(); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestRedisIntegrationRecoveryTornRead(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := context.Background()
+	i := testIncident("interleaved", "api")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Second)
+	opts := *client.Options()
+	otherClient := redis.NewClient(&opts)
+	defer otherClient.Close()
+	other, err := NewRedisStore(otherClient, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	h := &interleavedRecovery{activeKey: s.active, recover: func() error { _, err := other.Apply(ctx, Transition{Recovered, i}); return err }}
+	client.AddHook(h)
+	_, err = s.Apply(ctx, Transition{Recovered, i})
+	must(t, err)
+	if !h.once.Load() {
+		t.Fatal("interleaving was not exercised")
+	}
+	tasks, err := s.Outbox(ctx)
+	must(t, err)
+	if len(tasks) != 4 {
+		t.Fatal("interleaved recovery duplicated or lost tasks")
+	}
+	// A stable conflicting request must still fail, not be accepted as a retry.
+	i.FirstFailureAt = i.FirstFailureAt.Add(-time.Second)
+	if _, err := s.Apply(ctx, Transition{Recovered, i}); !errors.Is(err, ErrConflict) {
+		t.Fatal("real conflict accepted")
+	}
+}
 
 func (h *lostExecReply) DialHook(next redis.DialHook) redis.DialHook          { return next }
 func (h *lostExecReply) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
@@ -234,7 +290,7 @@ func TestRedisIntegrationDeliveryLegacyAndUncertainCommit(t *testing.T) {
 	for _, key := range []string{s.incidents, s.active, s.outbox} {
 		ttl, err := client.TTL(ctx, key).Result()
 		must(t, err)
-		if ttl != -1 {
+		if ttl != -1 && !(key == s.active && ttl == -2) {
 			t.Fatal("delivery introduced a TTL")
 		}
 	}

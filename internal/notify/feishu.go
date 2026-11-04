@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strconv"
 	"time"
@@ -36,12 +37,9 @@ var _ Sender = (*Feishu)(nil)
 // NewFeishu validates the official host/path without I/O. Tests can inject a
 // RoundTripper, while keeping the actual destination validation enabled.
 func NewFeishu(cfg FeishuConfig, opts Options) (*Feishu, error) {
-	u, err := destination(cfg.URL)
+	u, err := cfg.destination()
 	if err != nil {
 		return nil, err
-	}
-	if u.Scheme != "https" || (u.Hostname() != "open.feishu.cn" && u.Hostname() != "open.larksuite.com") || (u.Port() != "" && u.Port() != "443") || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || !botPath.MatchString(u.Path) || len(cfg.Secret) > 4096 || !utf8.ValidString(cfg.Secret) || len(cfg.Keyword) > maxFeishuBytes || !validText(cfg.Keyword, false) {
-		return nil, ErrInvalidConfig
 	}
 	client, err := newClient(opts)
 	if err != nil {
@@ -49,6 +47,23 @@ func NewFeishu(cfg FeishuConfig, opts Options) (*Feishu, error) {
 	}
 	return &Feishu{client: client, url: u.String(), secret: cfg.Secret, keyword: cfg.Keyword}, nil
 }
+
+// Validate checks custom-bot configuration without creating an HTTP client.
+func (cfg FeishuConfig) Validate() error { _, err := cfg.destination(); return err }
+
+func (cfg FeishuConfig) destination() (*url.URL, error) {
+	u, err := destination(cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "https" || (u.Hostname() != "open.feishu.cn" && u.Hostname() != "open.larksuite.com") || (u.Port() != "" && u.Port() != "443") || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || !botPath.MatchString(u.Path) || len(cfg.Secret) > 4096 || !utf8.ValidString(cfg.Secret) || len(cfg.Keyword) > maxFeishuBytes || !validText(cfg.Keyword, false) {
+		return nil, ErrInvalidConfig
+	}
+	return u, nil
+}
+
+// CloseIdleConnections releases idle connections after all Send calls finish.
+func (s *Feishu) CloseIdleConnections() { s.client.http.CloseIdleConnections() }
 
 type feishuPayload struct {
 	Timestamp string `json:"timestamp,omitempty"`

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"time"
 	_ "time/tzdata" // Keep IANA locations available without system zoneinfo.
+
+	"github.com/librecosta/uptime/internal/notify"
 )
 
 // StorageType selects one persistence backend without migrating existing history.
@@ -78,11 +80,21 @@ type UptimeConfig struct {
 	Timezone  *time.Location // Calendar-day boundaries, including daylight saving transitions.
 }
 
-// AlertsConfig enables incident tracking for all endpoints, without notification
-// delivery. ConsecutiveFailures is 1 through 10, defaulting to three.
+// AlertsConfig enables incident tracking and optional channel delivery.
+// ConsecutiveFailures is 1 through 10, defaulting to three.
 type AlertsConfig struct {
 	Enabled             bool
 	ConsecutiveFailures int
+	Channels            []AlertChannelConfig // nil when disabled; contains credentials, never log.
+}
+
+// AlertChannelConfig selects one adapter. ID is a literal stable incident-snapshot
+// identity. Exactly one configuration branch is active; the other is nil.
+type AlertChannelConfig struct {
+	ID      string
+	Type    string // webhook or feishu.
+	Webhook *notify.WebhookConfig
+	Feishu  *notify.FeishuConfig
 }
 
 // UIConfig controls the upstream dashboard and its API namespace.
@@ -106,6 +118,7 @@ type BasicAuthConfig struct{ Username, PasswordHash string }
 // EndpointConfig is a normalized HTTP probe. ID is the persistent service identity:
 // renaming it starts separate history, and omitting it from YAML never deletes data.
 type EndpointConfig struct {
+	AlertChannels       []string // Resolved sorted IDs; disabled alerts leave this nil.
 	ID                  string
 	Name                string
 	Description         string

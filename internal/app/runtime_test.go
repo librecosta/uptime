@@ -427,6 +427,16 @@ type testAlertStore struct {
 	apply  func(context.Context, alerts.Transition) (alerts.Incident, error)
 }
 
+func (s *testAlertStore) GetTask(ctx context.Context, id string) (*alerts.Task, error) {
+	return s.Store.(alerts.DeliveryStore).GetTask(ctx, id)
+}
+func (s *testAlertStore) QueryDue(ctx context.Context, q alerts.DueQuery) (alerts.TaskPage, error) {
+	return s.Store.(alerts.DeliveryStore).QueryDue(ctx, q)
+}
+func (s *testAlertStore) RecordOutcome(ctx context.Context, o alerts.Outcome) (alerts.Task, error) {
+	return s.Store.(alerts.DeliveryStore).RecordOutcome(ctx, o)
+}
+
 func (s *testAlertStore) Active(ctx context.Context, id string) (*alerts.Incident, error) {
 	if s.active != nil {
 		return s.active(ctx, id)

@@ -68,13 +68,16 @@ type alertEvent struct {
 
 // Upstream serializes callbacks for each endpoint, while different endpoints may
 // call concurrently. Counters and the immutable lookup table share that boundary.
-type alertIngressEndpoint struct{ sequence atomic.Uint64 }
+type alertIngressEndpoint struct {
+	sequence atomic.Uint64
+	policy   alerts.Policy
+}
 
 type alertRuntime struct {
 	engine     *alerts.Engine
 	store      alerts.Store
 	closeStore func() error
-	policy     alerts.Policy
+	delivery   *deliveryWorker
 	endpoints  map[string]*alertIngressEndpoint
 	queue      chan alertEvent
 	drain      chan context.Context
@@ -94,21 +97,26 @@ func newAlertRuntime(store alerts.Store, closeStore func() error, cfg config.Con
 	if err != nil {
 		return nil, err
 	}
+	delivery, err := newDeliveryWorker(store, cfg)
+	if err != nil {
+		return nil, err
+	}
 	r := &alertRuntime{
 		engine: engine, store: store, closeStore: closeStore,
-		policy:    alerts.Policy{FailureThreshold: cfg.Alerts.ConsecutiveFailures},
+		delivery:  delivery,
 		endpoints: make(map[string]*alertIngressEndpoint, len(cfg.Endpoints)),
 		queue:     make(chan alertEvent, capacity), drain: make(chan context.Context, 1),
 		done: make(chan struct{}), accepting: true, opTimeout: cfg.Server.ShutdownTimeout,
 	}
 	for _, endpoint := range cfg.Endpoints {
-		r.endpoints[endpoint.ID] = &alertIngressEndpoint{}
+		r.endpoints[endpoint.ID] = &alertIngressEndpoint{policy: alerts.Policy{FailureThreshold: cfg.Alerts.ConsecutiveFailures, ChannelIDs: append([]string(nil), endpoint.AlertChannels...)}}
 	}
 	// Probe cancellation must not discard a completed observation. This context
 	// belongs to the worker; stop supplies a separate deadline for draining it.
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	go r.work(ctx)
+	delivery.start()
 	return r, nil
 }
 
@@ -151,14 +159,15 @@ func (r *alertRuntime) work(ctx context.Context) {
 		// already in flight when shutdown starts; draining inherits its deadline.
 		opCtx, cancel := context.WithTimeout(ctx, r.opTimeout)
 		id := event.observation.EndpointID
+		policy := r.endpoints[id].policy
 		var err error
 		if broken[id] || event.sequence != last[id]+1 {
 			// Equal completion times let the real probe follow the gap without
 			// being rejected by the engine's older-observation filter.
-			_, err = r.engine.Observe(opCtx, alerts.Observation{EndpointID: id, CheckedAt: event.observation.CheckedAt, Gap: true}, r.policy)
+			_, err = r.engine.Observe(opCtx, alerts.Observation{EndpointID: id, CheckedAt: event.observation.CheckedAt, Gap: true}, policy)
 		}
 		if err == nil {
-			_, err = r.engine.Observe(opCtx, event.observation, r.policy)
+			_, err = r.engine.Observe(opCtx, event.observation, policy)
 		}
 		cancel()
 		broken[id] = err != nil
@@ -200,6 +209,7 @@ func (r *alertRuntime) stop(timeout time.Duration) error {
 		defer stopCancel()
 		<-r.done
 		r.cancel()
+		r.delivery.stop()
 		r.stopErr = errors.Join(safeError("alert drain timed out", drain.Err()), safeError("cannot close alert storage", r.closeStore()))
 	})
 	return r.stopErr

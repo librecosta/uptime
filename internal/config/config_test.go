@@ -16,6 +16,108 @@ const minimal = "endpoints:\n  - id: web\n    url: https://example.invalid/healt
 
 func emptyEnv(string) (string, bool) { return "", false }
 
+func TestAlertChannelsAndRouting(t *testing.T) {
+	data := []byte(`alerts:
+  enabled: true
+  channels:
+    - id: web
+      type: webhook
+      webhook: {url: "${HOOK}", bearer_token: "${TOKEN}"}
+      feishu: {url: "${INACTIVE}"}
+    - id: bot
+      type: feishu
+      feishu: {url: "${BOT}", secret: "${SECRET}", keyword: operations}
+      webhook: {url: "${INACTIVE}"}
+endpoints:
+  - {id: all, url: https://example.invalid}
+  - {id: quiet, url: https://example.invalid, alert_channels: []}
+  - {id: selected, url: https://example.invalid, alert_channels: [web]}
+`)
+	values := map[string]string{"HOOK": "https://example.invalid/hook?private=secret", "TOKEN": "private-token", "BOT": "https://open.feishu.cn/open-apis/bot/v2/hook/private", "SECRET": "private-secret"}
+	cfg := mustLoad(t, data, env(values))
+	if len(cfg.Alerts.Channels) != 2 || cfg.Alerts.Channels[0].Webhook.BearerToken != values["TOKEN"] || cfg.Alerts.Channels[0].Feishu != nil || cfg.Alerts.Channels[1].Webhook != nil || cfg.Alerts.Channels[1].Feishu.Secret != values["SECRET"] {
+		t.Fatal("active channel normalization")
+	}
+	for i, want := range [][]string{{"bot", "web"}, {}, {"web"}} {
+		if !reflect.DeepEqual(cfg.Endpoints[i].AlertChannels, want) {
+			t.Fatalf("route %d = %v; want %v", i, cfg.Endpoints[i].AlertChannels, want)
+		}
+	}
+	// Disabled alerts perform no lookup in channel values, even malformed env
+	// expressions, and allocate neither sender configuration nor routing policy.
+	data = []byte(strings.Replace(string(data), "enabled: true", "enabled: false", 1))
+	data = []byte(strings.Replace(string(data), "${HOOK}", "${BROKEN", 1))
+	cfg = mustLoad(t, data, emptyEnv)
+	if cfg.Alerts.Channels != nil || cfg.Endpoints[0].AlertChannels != nil {
+		t.Fatal("disabled channels were resolved")
+	}
+	// Enabling no channels remains a valid incident-only deployment.
+	cfg = mustLoad(t, []byte("alerts: {enabled: true, channels: []}\n"+minimal), emptyEnv)
+	if len(cfg.Alerts.Channels) != 0 || len(cfg.Endpoints[0].AlertChannels) != 0 {
+		t.Fatal("empty channels changed defaults")
+	}
+}
+
+func TestInvalidAlertChannelsStaySafe(t *testing.T) {
+	channel := func() map[string]any {
+		return map[string]any{"id": "ops", "type": "webhook", "webhook": map[string]any{"url": "https://example.invalid/private-url", "bearer_token": "private-token"}}
+	}
+	for _, mode := range []string{"duplicate", "id", "type", "url", "token", "insecure", "bot", "missing-ref", "duplicate-ref", "null", "unknown", "env"} {
+		t.Run(mode, func(t *testing.T) {
+			c := channel()
+			channels := []any{c}
+			changes := map[string]any{"alerts.enabled": true}
+			switch mode {
+			case "duplicate":
+				channels = append(channels, channel())
+			case "id":
+				c["id"] = "${PRIVATE_ID}"
+			case "type":
+				c["type"] = "private-type"
+			case "url":
+				c["webhook"].(map[string]any)["url"] = "https://user:private-token@host/private-url"
+			case "token":
+				c["webhook"].(map[string]any)["bearer_token"] = "private-token\r\nInjected: secret"
+			case "insecure":
+				c["webhook"].(map[string]any)["url"] = "http://example.invalid/private-url"
+			case "bot":
+				c["type"] = "feishu"
+				c["feishu"] = map[string]any{"url": "https://example.invalid/private-url", "secret": "private-secret"}
+			case "missing-ref":
+				changes["endpoints.0.alert_channels"] = []string{"private-unknown"}
+			case "duplicate-ref":
+				changes["endpoints.0.alert_channels"] = []string{"ops", "ops"}
+			case "null":
+				changes["endpoints.0.alert_channels"] = nil
+			case "unknown":
+				c["private-field"] = "private-secret"
+			case "env":
+				c["webhook"].(map[string]any)["url"] = "${MISSING}"
+			}
+			changes["alerts.channels"] = channels
+			cfg, err := load(configData(t, changes), emptyEnv)
+			if err == nil || !reflect.DeepEqual(cfg, Config{}) || strings.Contains(err.Error(), "private-") || strings.Contains(err.Error(), "example.invalid") {
+				t.Fatalf("unsafe validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestAlertConfigCheckIsOffline(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config.yaml")
+	data := configData(t, map[string]any{"alerts.enabled": true, "alerts.channels": []any{map[string]any{"id": "ops", "type": "webhook", "webhook": map[string]any{"url": "https://never-resolves.invalid/hook"}}}, "storage.bbolt.path": filepath.Join(dir, "data", "uptime.db")})
+	if err := os.WriteFile(file, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data")); !os.IsNotExist(err) {
+		t.Fatal("configuration opened storage")
+	}
+}
+
 func env(values map[string]string) envLookup {
 	return func(name string) (string, bool) { value, ok := values[name]; return value, ok }
 }

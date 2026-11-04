@@ -30,7 +30,7 @@ guards stable-tag publication; integration previews never publish releases or im
 - `internal/config`: raw YAML, active env resolution, normalized types, validation.
 - `internal/app`: Fiber/Uptime composition, health/lifecycle, standalone storage access.
 - `internal/service`, `internal/archive`: list/removal policy and read-only Archive v1 export.
-- `internal/alerts`: independent incident/outbox core; optional runtime ingress lives in `internal/app`. No channel delivery; see [alerts](contracts/alerts.md).
+- `internal/alerts`: incident/outbox persistence; `internal/notify`: single-attempt adapters; `internal/app`: optional ingress and one delivery worker. See [alerts](contracts/alerts.md).
 - `configs`: official example that validates without external services or secrets.
 - `tools/dist`: cross-platform build, allowlisted archives, and checksum verification.
 - `storage/bbolt`: public Fiber Uptime Store implementation and persistence tests.
@@ -87,7 +87,7 @@ conflict before changing behavior; do not silently rewrite a contract or design.
   must outlive Uptime background tasks and close after Fiber shutdown.
 - Optional alerts initialize before Uptime construction. The hook only enqueues;
   one worker detects gaps and calls the existing engine. Join probes before
-  stopping ingress/draining with an independent timeout, then join the worker
+  stopping ingress/draining with an independent timeout, then join both workers
   before closing alert persistence. Redis borrows the existing owned client.
 - Redis uses Fiber Storage and Uptime's native backend, never a custom Store.
   Close the borrowed Fiber handle before the owned go-redis client. No backend

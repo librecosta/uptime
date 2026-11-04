@@ -89,7 +89,19 @@ func (s *RedisStore) Active(ctx context.Context, endpoint string) (result *Incid
 
 func (s *RedisStore) watch(ctx context.Context, fn func(*redis.Tx) error) error {
 	for range 32 {
-		err := s.client.Watch(ctx, fn, s.incidents, s.active, s.outbox)
+		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+			err := fn(tx)
+			if errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) {
+				// WATCH does not make separate reads a snapshot. A concurrent EXEC
+				// can invalidate conditions before fn reaches its own EXEC. Validate
+				// these logical errors with a read-only transaction before returning
+				// them; genuine conflicts remain errors, torn reads retry instead.
+				if _, checkErr := tx.TxPipelined(ctx, func(p redis.Pipeliner) error { p.Ping(ctx); return nil }); checkErr != nil {
+					return checkErr
+				}
+			}
+			return err
+		}, s.incidents, s.active, s.outbox)
 		if !errors.Is(err, redis.TxFailedErr) {
 			return err
 		}

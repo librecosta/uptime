@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Optional Webhook/Feishu channel configuration and endpoint routing, a single
+  persistent-outbox delivery worker with bounded scans, existing retry policy,
+  uncertain-result reconciliation, per-bot limits and ordered graceful shutdown.
+  At-least-once delivery can repeat messages; one alert executor is required.
+
 - Independent Generic HTTP Webhook and Feishu/Lark custom-bot text adapters,
   with stable event payloads, optional credentials/signing, bounded HTTP requests,
   classified single-attempt results and Retry-After hints. No runtime delivery,
@@ -28,6 +33,10 @@ All notable changes to this project will be documented in this file.
   or actual notifications are configured or sent.
 
 ### Changed
+
+- Validate Redis WATCH conditions before returning logical errors from interleaved
+  reads; concurrent identical recoveries remain idempotent. Redis tests distinguish
+  an absent empty active hash from keys that actually have expiry.
 
 - Pin Fiber Uptime to PR #2604's merged commit
   `2800b7917d0e3f1b9932718ff6a62277d3b8742d` for its optional probe-result hook,

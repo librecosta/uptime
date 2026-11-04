@@ -53,7 +53,7 @@ upstream API in a new abstraction.
 | `internal/config` | Strict YAML, defaults, active environment resolution, validation | Implemented; returns normalized typed config |
 | `internal/service` | Derive active/detached from current YAML IDs; guard explicit removal | Sorted terminal-safe list; existence check and one deletion with read-back |
 | `internal/archive` | Backend-independent service archive/export | Archive v1, completed slots, no-replace JSON publication |
-| `internal/alerts` | Observation-driven state machine and independent incident/outbox persistence | Optional B2 hook ingress/worker in `internal/app`; YAML-enabled, no channels or delivery; see [alert contract](../contracts/alerts.md) |
+| `internal/alerts`, `internal/notify` | Incident/outbox persistence and independent notification adapters | Optional ingress and single delivery worker in `internal/app`; channel routing and delivery rules follow the [alert contract](../contracts/alerts.md) |
 | `storage/bbolt` | Public implementation of Fiber Uptime's Store contract | Implemented, caller-owned lifecycle |
 | `configs` | User-facing example configuration | Implemented; no active secret/env requirements |
 | `tools/dist` | Five native targets, allowlisted archives and SHA256SUMS | Local builds and manual preview artifacts; no release publication |
@@ -133,7 +133,7 @@ upstream API in a new abstraction.
   Uptime construction. Hook callbacks only enqueue ordered endpoint results;
   sequence/store failures force a Gap through the existing engine. After Fiber
   joins upstream probes, stop ingress and drain with an independent shutdown
-  timeout, then join the worker and close alert persistence. Redis borrows the
+  timeout, then cancel/join delivery and close alert persistence. Redis borrows the
   monitoring owner's client/prefix; bbolt uses a distinct sibling `alerts.db`.
 - Redis provides shared persistence, not leader election or distributed probe
   scheduling. Backend selection never migrates, deletes, merges, or dual-writes data.
