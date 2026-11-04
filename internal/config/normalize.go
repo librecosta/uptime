@@ -9,21 +9,24 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/librecosta/uptime/internal/notify"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/text/unicode/norm"
 )
 
 var (
-	endpointID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	daySpan    = regexp.MustCompile(`^[1-9][0-9]*d$`)
-	bcryptHash = regexp.MustCompile(`^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$`)
+	endpointID     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	daySpan        = regexp.MustCompile(`^[1-9][0-9]*d$`)
+	bcryptHash     = regexp.MustCompile(`^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$`)
+	alertChannelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 )
 
 // A normalizer keeps the first field error. Nothing partially normalized is
@@ -152,6 +155,12 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		}
 	}
 
+	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures}
+	if cfg.Alerts.ConsecutiveFailures < 1 || cfg.Alerts.ConsecutiveFailures > 10 {
+		n.fail("alerts.consecutive_failures", "expected an integer from 1 through 10")
+	}
+	channelIDs := n.alertChannels(raw, &cfg.Alerts)
+
 	cfg.UI.Path = n.text("ui.path", raw.UI.Path, true)
 	if !strings.HasPrefix(cfg.UI.Path, "/") || cfg.UI.Path == "/" ||
 		path.Clean(cfg.UI.Path) != cfg.UI.Path || strings.ContainsAny(cfg.UI.Path, "?#\\\r\n") ||
@@ -237,12 +246,61 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 			codes[code] = true
 		}
 		e.Headers = n.headers(field+".headers", r.Headers)
+		if cfg.Alerts.Enabled {
+			e.AlertChannels = append([]string{}, channelIDs...)
+			if r.AlertChannels != nil {
+				e.AlertChannels = make([]string, 0, len(r.AlertChannels))
+				refs := make(map[string]bool)
+				for _, id := range r.AlertChannels {
+					if !slices.Contains(channelIDs, id) || refs[id] {
+						n.fail(field+".alert_channels", "expected unique references to defined channel IDs")
+					}
+					refs[id] = true
+					e.AlertChannels = append(e.AlertChannels, id)
+				}
+				sort.Strings(e.AlertChannels)
+			}
+		}
 		cfg.Endpoints = append(cfg.Endpoints, e)
 	}
 	if n.err != nil {
 		return Config{}, n.err
 	}
 	return cfg, nil
+}
+
+func (n *normalizer) alertChannels(raw rawConfig, cfg *AlertsConfig) []string {
+	if !cfg.Enabled {
+		return nil
+	}
+	var ids []string
+	seen := make(map[string]bool)
+	for i, r := range raw.Alerts.Channels {
+		field := fmt.Sprintf("alerts.channels[%d]", i)
+		if !alertChannelID.MatchString(r.ID) || seen[r.ID] {
+			n.fail(field+".id", "expected a unique literal channel ID (1..128 ASCII letters/digits/._-, starting with a letter/digit)")
+		}
+		seen[r.ID] = true
+		c := AlertChannelConfig{ID: r.ID, Type: r.Type}
+		switch r.Type {
+		case "webhook":
+			c.Webhook = &notify.WebhookConfig{URL: n.text(field+".webhook.url", r.Webhook.URL, true), BearerToken: n.text(field+".webhook.bearer_token", r.Webhook.BearerToken, false)}
+			if c.Webhook.Validate() != nil {
+				n.fail(field+".webhook", "invalid webhook configuration")
+			}
+		case "feishu":
+			c.Feishu = &notify.FeishuConfig{URL: n.text(field+".feishu.url", r.Feishu.URL, true), Secret: n.text(field+".feishu.secret", r.Feishu.Secret, false), Keyword: n.text(field+".feishu.keyword", r.Feishu.Keyword, false)}
+			if c.Feishu.Validate() != nil {
+				n.fail(field+".feishu", "invalid custom-bot configuration")
+			}
+		default:
+			n.fail(field+".type", "expected literal webhook or feishu")
+		}
+		ids = append(ids, r.ID)
+		cfg.Channels = append(cfg.Channels, c)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func validAddress(value string) bool {

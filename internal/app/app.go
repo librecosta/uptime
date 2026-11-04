@@ -12,6 +12,7 @@ import (
 
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
 	"github.com/gofiber/fiber/v3"
+	"github.com/librecosta/uptime/internal/alerts"
 	"github.com/librecosta/uptime/internal/config"
 )
 
@@ -24,6 +25,7 @@ type runtimeStore interface {
 
 type dependencies struct {
 	openStorage func(config.StorageConfig) (*runtimeStorage, error)
+	openAlerts  func(context.Context, *runtimeStorage, config.Config) (alerts.Store, func() error, error)
 	listen      func(string, string) (net.Listener, error)
 }
 
@@ -35,6 +37,7 @@ type Server struct {
 	started      atomic.Bool
 	app          *fiber.App
 	store        *runtimeStorage
+	alerts       *alertRuntime
 	listener     *runtimeListener
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -57,6 +60,7 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	return &Server{cfg: cfg, deps: dependencies{
 		openStorage: openStorage,
+		openAlerts:  openAlertStore,
 		listen:      net.Listen,
 	}}, nil
 }

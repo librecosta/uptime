@@ -23,9 +23,11 @@ func TestConfigCheck(t *testing.T) {
 	t.Chdir(dir)
 	writeConfig(t, "uptime.yaml", validConfig)
 	writeConfig(t, "custom.yaml", validConfig)
+	writeConfig(t, "alerts.yaml", validConfig+"alerts: {enabled: true, consecutive_failures: 3}\n")
 	for _, args := range [][]string{
 		{"config", "check"}, {"config", "check", "--config", "custom.yaml"},
 		{"config", "check", "--config=" + filepath.Join(dir, "custom.yaml")},
+		{"config", "check", "--config", "alerts.yaml"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(context.Background(), args, &stdout, &stderr); code != 0 || stdout.String() != "configuration is valid\n" || stderr.Len() != 0 {
@@ -33,7 +35,7 @@ func TestConfigCheck(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 2 {
+	if err != nil || len(entries) != 3 {
 		t.Fatal("config check created unexpected files")
 	}
 }

@@ -55,7 +55,7 @@ explicitly select `GOTOOLCHAIN=go1.26.10` for a matching distribution build
 (PowerShell: `$env:GOTOOLCHAIN = 'go1.26.10'`). Check `go version` before building.
 
 For storage/runtime changes also run `make race`
-(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./cmd/uptime/...`).
+(`go test -race ./storage/bbolt/... ./internal/app/... ./internal/archive/... ./internal/alerts/... ./internal/notify/... ./cmd/uptime/...`).
 It is separate from `make check` and has a dedicated Go 1.27.x Ubuntu CI job.
 The race detector requires a supported platform and C compiler; report local
 limitations rather than claiming an unavailable run passed.
@@ -113,7 +113,7 @@ Windows amd64 builds after lifecycle/signal changes; no release packaging is imp
 P4 real Redis tests require an explicitly supplied `UPTIME_TEST_REDIS_URL`:
 
 ```sh
-UPTIME_TEST_REDIS_URL=redis://127.0.0.1:6379/15 go test ./internal/app/... -run '^TestRedisIntegration' -count=1
+UPTIME_TEST_REDIS_URL=redis://127.0.0.1:6379/15 go test ./internal/app/... ./internal/alerts/... -run '^TestRedisIntegration' -count=1
 ```
 
 Without it, these tests skip; `make check` and `make race` require no Redis.
@@ -198,7 +198,8 @@ bash deploy/docker/smoke.sh librecosta-uptime:dev-amd64 "$(git rev-parse HEAD)"
 
 Smoke requires Bash, curl, tar and an amd64 Linux Docker host. It checks version,
 help/config, CA roots, runtime contents, missing config, non-root named-volume
-initialization, health/root redirect, graceful stop, detached data after container
+initialization of both uptime.db and alerts.db (UID/GID 65532, mode 0600),
+health/root redirect, graceful stop, detached data after container
 replacement, and read-only storage failure. It traps exit/signals to remove only
 its unique containers, volume and temporary files. Verify cleanup if interrupted;
 never prune unrelated Docker resources. No ARM64 execution or QEMU is required.

@@ -47,6 +47,13 @@ The ordinary `storage.bbolt.path: ./data/uptime.db` resolves to
 `StateDirectory=librecosta-uptime` creates and owns the working/state directory
 for the service account, and makes it writable despite `ProtectSystem=strict`.
 The account is not root; its private state directory and `UMask=0077` protect data.
+When alerts are enabled in v0.2.0, `alerts.db` is created beside `uptime.db`, with
+the same service ownership and mode 0600. No extra writable path is needed. Use
+the [current example](../../configs/uptime.example.yaml) for candidate alert
+configuration; the v0.1.0 download above does not include alerts. Run one alert
+executor per database/Redis prefix and keep channel credentials private.
+For a candidate, also install the unit from that candidate's source; its 45-second
+stop budget replaces the older release unit's 30 seconds.
 
 ```sh
 /usr/local/bin/uptime version
@@ -79,12 +86,40 @@ health remains unauthenticated. Target DOWN does not make the process unready.
 
 ```sh
 sudo systemctl stop librecosta-uptime
+backup="/var/backups/librecosta-uptime/$(date -u +%Y%m%dT%H%M%SZ)"
 sudo install -d -m 0700 /var/backups/librecosta-uptime
-sudo cp --preserve=mode,timestamps /var/lib/librecosta-uptime/data/uptime.db \
-  "/var/backups/librecosta-uptime/uptime-$(date -u +%Y%m%dT%H%M%SZ).db"
+sudo mkdir -m 0700 "$backup"
+sudo cp -a /var/lib/librecosta-uptime/data/. "$backup/"
+sudo chown root:root "$backup"
+sudo chmod 0700 "$backup"
+sudo test -s "$backup/uptime.db"
+# Also require this check if alerts have been enabled:
+# sudo test -s "$backup/alerts.db"
 ```
 
 Verify stop and backup succeed before proceeding; do not overwrite older backups.
+Back up **both databases from the same stopped instance** whenever `alerts.db`
+exists, including after alerts are disabled. Keep the matching YAML separately
+and privately. To restore a matching backup set, stop the service and preserve
+its current files first. If the backup predates alerts, use a fresh state directory
+rather than retaining an unrelated, newer `alerts.db`. Restore service ownership:
+
+```sh
+sudo install -m 0600 -o librecosta-uptime -g librecosta-uptime \
+  "$backup/uptime.db" /var/lib/librecosta-uptime/data/uptime.db
+if sudo test -f "$backup/alerts.db"; then
+  sudo install -m 0600 -o librecosta-uptime -g librecosta-uptime \
+    "$backup/alerts.db" /var/lib/librecosta-uptime/data/alerts.db
+fi
+sudo systemctl start librecosta-uptime
+curl --fail http://127.0.0.1:18580/readyz
+```
+
+Do not copy live bbolt files. There is no schema migration or automatic backup
+task. With Redis, alert state uses the independent
+`<storage.redis.key_prefix>:alerts:v1:` namespace in the same database; back up
+monitoring and alert keys together through the Redis operator's RDB/AOF procedure.
+
 Run offline bbolt maintenance with the **service account and working directory**:
 
 ```sh
@@ -110,8 +145,10 @@ curl --fail http://127.0.0.1:18580/readyz
 
 Use `sudo systemctl restart librecosta-uptime` after ordinary configuration changes;
 run `daemon-reload` first when changing the unit. The service handles SIGTERM and
-has 30 seconds to stop, exceeding the default 10-second application timeout.
-Increase `TimeoutStopSec` when increasing `server.shutdown_timeout`. A systemd
+has a 45-second stop budget. HTTP/probe shutdown, observation draining and delivery
+recording can use separate 10-second application timeout budgets; both workers
+exit before alert storage closes, followed by monitoring storage. Increase
+`TimeoutStopSec` when increasing `server.shutdown_timeout`. A systemd
 stop timeout can still force termination; it cannot make blocked I/O safe.
 Keep the previous binary and offline backup until the upgrade is verified.
 There are no install/uninstall CLI commands, automatic upgrades or migrations.

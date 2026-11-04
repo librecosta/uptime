@@ -6,6 +6,10 @@ The bbolt representation and guarantees below apply to that backend. P4 Redis
 persistence uses the pinned Uptime native backend through Fiber Storage Redis;
 LibreCosta does not define Redis keys, serialization, or a Redis Store implementation.
 
+v0.2.0 adds an optional alert runtime with its own bbolt database
+and Redis namespace. These monitoring constraints and Schema v1 remain unchanged;
+the independent alert representation is defined in [alerts](alerts.md).
+
 ## Backend Selection and Ownership
 
 - Exactly one active persistence source: bbolt via `uptime.Config.Storage`, or

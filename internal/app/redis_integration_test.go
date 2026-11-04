@@ -18,6 +18,7 @@ import (
 
 	"github.com/gofiber/contrib/v3/uptime"
 	fiberredis "github.com/gofiber/storage/redis/v3"
+	"github.com/librecosta/uptime/internal/alerts"
 	"github.com/librecosta/uptime/internal/config"
 	"github.com/librecosta/uptime/internal/service"
 	"github.com/redis/go-redis/v9"
@@ -114,6 +115,128 @@ func TestRedisIntegrationServiceStorageStartupFailure(t *testing.T) {
 	session, err := OpenServiceStorage(context.Background(), cfg)
 	if session != nil || err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), u.String()) {
 		t.Fatal("missing or unsafe standalone Redis initialization failure")
+	}
+}
+
+func TestRedisIntegrationAlertRuntime(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	prefix := redisIntegrationPrefix(t, redisURL)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	defer target.Close()
+	cfg := redisIntegrationConfig(t, redisURL, prefix, "target", target.URL)
+	cfg.Alerts = config.AlertsConfig{Enabled: true, ConsecutiveFailures: 1}
+	s, err := New(cfg)
+	must(t, err)
+	var closes atomic.Int32
+	s.deps.openAlerts = func(ctx context.Context, resources *runtimeStorage, cfg config.Config) (alerts.Store, func() error, error) {
+		store, closeStore, err := openAlertStore(ctx, resources, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Wrap only resource closure after both native stores have borrowed the
+		// same real client. No second pool/client is constructed for alerts.
+		client := resources.redisClient
+		resources.redisClient = &pingClient{UniversalClient: client, ping: func(ctx context.Context) error {
+			return client.Ping(ctx).Err()
+		}, closeClient: func() error {
+			closes.Add(1)
+			if _, err := resources.redis.Get("unused"); !errors.Is(err, fiberredis.ErrClosed) {
+				t.Error("owned client closed before borrowed Fiber handle")
+			}
+			return client.Close()
+		}}
+		return store, closeStore, nil
+	}
+	r := startServer(t, s)
+	var active *alerts.Incident
+	poll(t, func() bool {
+		active, err = s.alerts.store.Active(context.Background(), "target")
+		must(t, err)
+		return active != nil
+	})
+	redisSnapshot(t, r, cfg.UI.Path, "target", "down")
+	otherCfg := cfg
+	otherRedis := *cfg.Storage.Redis
+	otherRedis.KeyPrefix = redisIntegrationPrefix(t, redisURL)
+	otherCfg.Storage.Redis = &otherRedis
+	other, err := openStorage(otherCfg.Storage)
+	must(t, err)
+	defer other.Close()
+	isolated, closeOther, err := openAlertStore(context.Background(), other, otherCfg)
+	must(t, err)
+	defer closeOther()
+	if incident, err := isolated.Active(context.Background(), "target"); err != nil || incident != nil {
+		t.Fatal("alert query crossed deployment prefixes")
+	}
+	r.cancel()
+	must(t, r.wait(t))
+	must(t, s.store.Close())
+	if closes.Load() != 1 {
+		t.Fatal("shared client was not closed exactly once")
+	}
+	assertRedisClosed(t, s.store)
+	// Independent reopening sees both monitoring history and the alert incident.
+	owner, err := openStorage(cfg.Storage)
+	must(t, err)
+	defer owner.Close()
+	reopened, closeAlert, err := openAlertStore(context.Background(), owner, cfg)
+	must(t, err)
+	defer closeAlert()
+	persisted, err := reopened.Active(context.Background(), "target")
+	must(t, err)
+	if persisted == nil || persisted.ID != active.ID {
+		t.Fatal("shutdown lost FIRING")
+	}
+	query, err := uptime.NewRedisStore(context.Background(), uptime.RedisStoreConfig{Store: owner.redis, StorageKeyPrefix: prefix})
+	must(t, err)
+	services, err := query.ListServices(context.Background())
+	must(t, err)
+	if len(services) != 1 || services[0].ID != "target" {
+		t.Fatal("alert storage damaged monitoring history")
+	}
+	must(t, closeAlert()) // Borrowed alert lifetime must not close the owner.
+	must(t, owner.Ping(context.Background()))
+}
+
+func TestRedisIntegrationAlertDelivery(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	var success atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !success.Load() {
+			w.WriteHeader(500)
+		}
+	}))
+	defer target.Close()
+	cfg := redisIntegrationConfig(t, redisURL, redisIntegrationPrefix(t, redisURL), "target", target.URL)
+	exerciseAlertDelivery(t, cfg, &success)
+}
+
+func TestRedisIntegrationAlertStartupFailure(t *testing.T) {
+	redisURL := redisIntegrationURL(t)
+	for _, suffix := range []string{"incidents", "active", "outbox"} {
+		t.Run(suffix, func(t *testing.T) {
+			prefix := redisIntegrationPrefix(t, redisURL)
+			cfg := redisIntegrationConfig(t, redisURL, prefix, "target", "http://never-resolves.invalid/")
+			cfg.Alerts.Enabled = true
+			owner, err := openStorage(cfg.Storage)
+			must(t, err)
+			defer owner.Close()
+			key := prefix + ":alerts:v1:" + suffix
+			must(t, owner.redisClient.Set(context.Background(), key, "foreign SECRET data", 0).Err())
+			s, err := New(cfg)
+			must(t, err)
+			s.deps.listen = func(network, _ string) (net.Listener, error) { return net.Listen(network, "127.0.0.1:0") }
+			err = s.Run(context.Background())
+			if err == nil || strings.Contains(err.Error(), "SECRET") || s.alerts != nil || s.ready.Load() {
+				t.Fatalf("incompatible namespace did not fail safely: %v", err)
+			}
+			assertRedisClosed(t, s.store)
+			value, err := owner.redisClient.Get(context.Background(), key).Result()
+			must(t, err)
+			if value != "foreign SECRET data" {
+				t.Fatal("startup changed a foreign key")
+			}
+		})
 	}
 }
 

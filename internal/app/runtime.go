@@ -84,7 +84,19 @@ func (s *Server) Run(ctx context.Context) (result error) {
 		}
 		s.app.Use(auth)
 	}
-	handler, err := newUptime(buildUptimeConfig(s.app, store, s.cfg))
+	uptimeConfig := buildUptimeConfig(s.app, store, s.cfg)
+	if s.cfg.Alerts.Enabled {
+		alertStore, closeStore, err := s.deps.openAlerts(ctx, store, s.cfg)
+		if err != nil {
+			return safeError("cannot initialize alert storage", err)
+		}
+		s.alerts, err = newAlertRuntime(alertStore, closeStore, s.cfg, alertBufferCapacity)
+		if err != nil {
+			return errors.Join(safeError("cannot initialize alerts", err), safeError("cannot close alert storage", closeStore()))
+		}
+		uptimeConfig.OnProbeResult = s.alerts.hook
+	}
+	handler, err := newUptime(uptimeConfig)
 	if err != nil {
 		return err
 	}
@@ -143,6 +155,9 @@ func (s *Server) shutdown() error {
 			s.listener.drained.Wait()
 		}
 		s.shutdownErr = safeError("HTTP shutdown failed", err)
+		if s.alerts != nil {
+			s.shutdownErr = errors.Join(s.shutdownErr, s.alerts.stop(s.cfg.Server.ShutdownTimeout))
+		}
 	})
 	return s.shutdownErr
 }
