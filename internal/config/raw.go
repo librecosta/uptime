@@ -28,6 +28,9 @@ type rawConfig struct {
 		Window    *string `yaml:"window"`
 		Timezone  *string `yaml:"timezone"`
 	} `yaml:"uptime"`
+	Monitor struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"monitor"`
 	Alerts struct {
 		Enabled             bool              `yaml:"enabled"`
 		ConsecutiveFailures *int              `yaml:"consecutive_failures"`
@@ -48,8 +51,9 @@ type rawConfig struct {
 		} `yaml:"thresholds"`
 	} `yaml:"ui"`
 	Auth struct {
-		Enabled bool `yaml:"enabled"`
-		Basic   struct {
+		Enabled       bool  `yaml:"enabled"`
+		ProtectUptime *bool `yaml:"protect_uptime"`
+		Basic         struct {
 			Username     *string `yaml:"username"`
 			PasswordHash *string `yaml:"password_hash"`
 		} `yaml:"basic"`
@@ -100,6 +104,7 @@ func (r *rawConfig) defaults() {
 	defaultTo(&r.Uptime.Retention, "90d")
 	defaultTo(&r.Uptime.Window, "30d")
 	defaultTo(&r.Uptime.Timezone, "UTC")
+	defaultTo(&r.Auth.ProtectUptime, true)
 	defaultTo(&r.Alerts.ConsecutiveFailures, 3)
 	defaultTo(&r.Alerts.RecoverySuccesses, 1)
 	defaultTo(&r.Alerts.ReminderInterval, "0s")

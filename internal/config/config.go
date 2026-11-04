@@ -32,6 +32,7 @@ type Config struct {
 	Server    ServerConfig
 	Storage   StorageConfig
 	Uptime    UptimeConfig
+	Monitor   MonitorConfig
 	Alerts    AlertsConfig
 	UI        UIConfig
 	Auth      *BasicAuthConfig // nil disables authentication.
@@ -80,6 +81,10 @@ type UptimeConfig struct {
 	Timezone  *time.Location // Calendar-day boundaries, including daylight saving transitions.
 }
 
+// MonitorConfig opts into the upstream process/system/HTTP dashboard. Enabled
+// monitoring requires Basic Auth and never persists metrics.
+type MonitorConfig struct{ Enabled bool }
+
 // AlertsConfig enables incident tracking and optional channel delivery.
 // ConsecutiveFailures is 1 through 10, defaulting to three.
 // RecoverySuccesses is 1 through 10, defaulting to one.
@@ -87,8 +92,8 @@ type AlertsConfig struct {
 	Enabled             bool
 	ConsecutiveFailures int
 	RecoverySuccesses   int
-	ReminderInterval    time.Duration        // Zero disables reminders; otherwise at least one second.
-	ReminderLimit       int                  // Zero when disabled; otherwise 1 through 100, frozen per incident.
+	ReminderInterval    time.Duration        // Zero disables reminders; otherwise 5 minutes through 30 days.
+	ReminderLimit       int                  // Zero when disabled; otherwise 1 through 10, frozen per incident.
 	Channels            []AlertChannelConfig // nil when disabled; contains credentials, never log.
 }
 
@@ -117,7 +122,10 @@ type ThresholdConfig struct{ Green, Yellow float64 }
 // BasicAuthConfig holds an NFC-normalized username and a validated bcrypt hash.
 // PasswordHash is sensitive and must not be logged; password verification belongs
 // to Fiber's middleware, not configuration loading.
-type BasicAuthConfig struct{ Username, PasswordHash string }
+type BasicAuthConfig struct {
+	Username, PasswordHash string
+	ProtectUptime          bool // Defaults to true; false publishes the Uptime dashboard and its JSON API together.
+}
 
 // EndpointConfig is a normalized HTTP probe. ID is the persistent service identity:
 // renaming it starts separate history, and omitting it from YAML never deletes data.

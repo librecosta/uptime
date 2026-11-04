@@ -80,7 +80,7 @@ fallback. Both formatting commands modify source; inspect their changes before
 declaring the final tree verified.
 
 When module inputs change, run `go mod tidy`, inspect `go.mod`/`go.sum`, and run
-`go list -m all`. Direct dependencies are Fiber v3, Fiber Contrib Uptime,
+`go list -m all`. Direct dependencies are Fiber v3, Fiber Contrib Uptime/Monitor,
 Fiber Storage Redis, go-redis, bbolt, YAML v3, x/crypto and x/text;
 their transitive module graph is expected. Always finish with:
 

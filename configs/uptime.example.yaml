@@ -26,13 +26,20 @@ storage:
     key_prefix: fiber:uptime
 
 auth:
-  # Enable Basic Auth for the UI/API; health endpoints stay public.
+  # Enable Basic Auth; health endpoints always stay public.
   # The variables below are only required when enabled. Use TLS or a trusted TLS proxy.
   enabled: false
+  # false publishes the Uptime page AND its status API; Monitor stays private.
+  protect_uptime: true
   basic:
     username: "${UPTIME_AUTH_USERNAME}"
     # Use a bcrypt hash, never plaintext. Normalize non-ASCII passwords to NFC first.
     password_hash: "${UPTIME_AUTH_PASSWORD_HASH}"
+
+monitor:
+  # Native process/HTTP dashboard at /monitor (JSON via Accept: application/json).
+  # Requires enabled Basic Auth with valid credentials; refreshes every 3 seconds.
+  enabled: false
 
 uptime:
   # Default probe interval; individual endpoints can override it.
@@ -49,7 +56,7 @@ alerts:
   enabled: false
   consecutive_failures: 3 # 1 through 10; confirms an incident.
   recovery_successes: 1 # 1 through 10; consecutive successes needed to resolve it.
-  # Both zero disables reminders. When enabled: interval >= 1s, limit 1 through 100.
+  # Both zero disables reminders. When enabled: 5m through 720h, limit 1 through 10.
   # The policy is frozen for each new incident; existing incidents keep theirs.
   reminder_interval: 0s
   reminder_limit: 0

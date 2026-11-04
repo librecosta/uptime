@@ -8,7 +8,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/log"
-	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/librecosta/uptime/internal/config"
 )
 
@@ -66,23 +65,11 @@ func (s *Server) Run(ctx context.Context) (result error) {
 		serveListener = tls.NewListener(s.listener, buildTLSConfig(s.cfg.Server.TLS))
 	}
 	s.app = fiber.New(fiber.Config{AppName: "LibreCosta Uptime"})
-	s.app.Use(recoverer.New())
-	s.registerHealth()
-	s.app.Use(func(c fiber.Ctx) error {
-		if c.Path() != "/" || (c.Method() != fiber.MethodGet && c.Method() != fiber.MethodHead) {
-			return c.Next()
-		}
-		return c.Redirect().Status(fiber.StatusFound).To(s.cfg.UI.Path)
-	})
 	s.app.Hooks().OnPreShutdown(func() error { s.ready.Store(false); return nil })
 	// Covers constructor rejection and every subsequent failure path.
 	defer func() { result = errors.Join(result, s.shutdown()) }()
-	if s.cfg.Auth != nil {
-		auth, err := newBasicAuth(*s.cfg.Auth, s.cfg.UI.Path)
-		if err != nil {
-			return err
-		}
-		s.app.Use(auth)
+	if err := s.registerMiddleware(); err != nil {
+		return err
 	}
 	uptimeConfig := buildUptimeConfig(s.app, store, s.cfg)
 	if s.cfg.Alerts.Enabled {

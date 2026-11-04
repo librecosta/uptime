@@ -532,13 +532,21 @@ func TestReminderConfig(t *testing.T) {
 	if cfg.Alerts.ReminderInterval != 5*time.Minute || cfg.Alerts.ReminderLimit != 4 {
 		t.Fatal("reminder mapping")
 	}
+	for _, interval := range []string{"5m", "720h"} {
+		for _, limit := range []int{1, 10} {
+			cfg = mustLoad(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.reminder_interval": interval, "alerts.reminder_limit": limit}), emptyEnv)
+			if cfg.Alerts.ReminderLimit != limit || cfg.Alerts.ReminderInterval == 0 {
+				t.Fatal("valid reminder boundary rejected")
+			}
+		}
+	}
 	for _, tc := range []struct {
 		interval string
 		limit    int
 		field    string
 	}{
 		{"bad", 1, "alerts.reminder_interval"}, {"-1s", 1, "alerts.reminder_interval"}, {"1ms", 1, "alerts.reminder_interval"},
-		{"0s", 1, "alerts.reminder_limit"}, {"1m", 0, "alerts.reminder_limit"}, {"1m", 101, "alerts.reminder_limit"},
+		{"0s", 1, "alerts.reminder_limit"}, {"5m", 0, "alerts.reminder_limit"}, {"5m", 11, "alerts.reminder_limit"}, {"5m", -1, "alerts.reminder_limit"}, {"299s", 1, "alerts.reminder_interval"}, {"721h", 1, "alerts.reminder_interval"},
 	} {
 		wantInvalid(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.reminder_interval": tc.interval, "alerts.reminder_limit": tc.limit}), emptyEnv, tc.field)
 	}

@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Optional native Fiber Contrib Monitor v1.2.4 dashboard and JSON snapshots at
+  `/monitor`, with authenticated access and HTTP statistics including recovered
+  5xx responses. Monitor requests do not count themselves; Monitor stays off
+  by default. The upstream system dependency retains its one-time initialization.
+- `auth.protect_uptime` (default true) allows public Uptime pages/status API while
+  keeping Monitor private. Monitor requires enabled valid Basic Auth; `/alerts`
+  is reserved and conflicting UI paths are rejected.
 - Configurable consecutive recovery successes (1–10, default one), with volatile
   counts reset by failure, observation gaps and restart.
 - Optional, durable REMINDER notifications driven only by real failed probes,
@@ -32,6 +39,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Restrict new reminder configuration to 5 minutes through 30 days and 1–10
+  reminders, or zero/zero to disable. Existing persisted policies remain readable
+  and retain their frozen schedule; no schema or transaction change is required.
 - Allow separate shutdown/drain/recording phases in Docker/systemd stop budgets
   (45 seconds with the default application timeout); application defaults stay
   unchanged. Monitoring Schema v1 remains unchanged; alert storage upgrades are

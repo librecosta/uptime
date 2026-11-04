@@ -19,7 +19,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -248,7 +250,7 @@ func TestSecurityCombinations(t *testing.T) {
 }
 
 func TestBasicAuthConstructorFailure(t *testing.T) {
-	handler, err := newBasicAuth(config.BasicAuthConfig{Username: "private-user", PasswordHash: "PRIVATE-INVALID-HASH"}, "/status")
+	handler, err := newBasicAuth(config.Config{Auth: &config.BasicAuthConfig{Username: "private-user", PasswordHash: "PRIVATE-INVALID-HASH", ProtectUptime: true}, UI: config.UIConfig{Path: "/status"}})
 	if handler != nil || err == nil || err.Error() != "cannot initialize Basic Auth" {
 		t.Fatal("missing safe constructor error")
 	}
@@ -275,7 +277,7 @@ func TestBasicAuthConstructorFailure(t *testing.T) {
 func TestAuthHealthAlwaysPublic(t *testing.T) {
 	hash, err := bcrypt.GenerateFromPassword([]byte("private"), bcrypt.MinCost)
 	must(t, err)
-	auth, err := newBasicAuth(config.BasicAuthConfig{Username: "admin", PasswordHash: string(hash)}, "/status")
+	auth, err := newBasicAuth(config.Config{Auth: &config.BasicAuthConfig{Username: "admin", PasswordHash: string(hash), ProtectUptime: true}, UI: config.UIConfig{Path: "/status"}})
 	must(t, err)
 	calls := 0
 	s := &Server{app: fiber.New(), store: wrapBbolt(&testStore{ping: func(context.Context) error {
@@ -401,4 +403,202 @@ func TestTLSAuthBindFailure(t *testing.T) {
 		t.Fatal("bind ordering changed")
 	}
 	reopen(t, cfg.Storage.Bbolt.Path)
+}
+
+// Exercise the production composition without starting probes or opening storage.
+func TestMonitorHTTPMetrics(t *testing.T) {
+	cfg, _ := securityConfig(t, "http://never-resolves.invalid/", "/status", false, true)
+	cfg.Monitor.Enabled = true
+	s := &Server{cfg: cfg, app: fiber.New()}
+	must(t, s.registerMiddleware())
+	s.app.Get("/ok", func(c fiber.Ctx) error { return c.SendStatus(204) })
+	s.app.Get("/panic", func(fiber.Ctx) error { panic("test panic") })
+	request := func(method, path, accept string, authenticated bool) (*http.Response, []byte) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Accept", accept)
+		if authenticated {
+			req.SetBasicAuth(securityUser, securityPassword)
+		}
+		response, err := s.app.Test(req, fiber.TestConfig{Timeout: 10 * time.Second, FailOnTimeout: true})
+		must(t, err)
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		must(t, err)
+		return response, body
+	}
+	// None of these Monitor requests, including authentication refusals, count.
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		response, _ := request(method, "/monitor", "application/json", false)
+		assertChallenge(t, response)
+		response, body := request(method, "/monitor/", "text/html", true)
+		if response.StatusCode != 200 || method == http.MethodGet && (!bytes.Contains(body, []byte("Fiber Monitor")) || !regexp.MustCompile(`const REFRESH_MS =\s*3000\s*;`).Match(body)) {
+			t.Fatalf("native Monitor dashboard/default refresh changed: status=%d title=%v", response.StatusCode, bytes.Contains(body, []byte("Fiber Monitor")))
+		}
+	}
+	for _, test := range []struct {
+		path   string
+		status int
+	}{{"/livez", 200}, {"/readyz", 503}, {"/", 302}, {"/missing", 404}, {"/panic", 500}, {"/status", 401}, {"/ok", 204}} {
+		response, _ := request(http.MethodGet, test.path, "text/html", false)
+		if response.StatusCode != test.status {
+			t.Fatalf("%s: got %d want %d", test.path, response.StatusCode, test.status)
+		}
+	}
+	var wg sync.WaitGroup
+	for range 24 {
+		wg.Go(func() {
+			response, _ := request(http.MethodGet, "/ok", "text/html", false)
+			if response.StatusCode != 204 {
+				t.Error("concurrent request failed")
+			}
+		})
+	}
+	wg.Wait()
+	type snapshot struct {
+		CollectedAt time.Time `json:"collected_at"`
+		HTTP        struct {
+			Requests uint64            `json:"requests"`
+			InFlight uint64            `json:"in_flight"`
+			Status   map[string]uint64 `json:"status"`
+		} `json:"http"`
+		Runtime struct {
+			GCPauseMetricsEnabled bool    `json:"gc_pause_metrics_enabled"`
+			GCPauseTotalNS        *uint64 `json:"gc_pause_total_ns"`
+			Goroutines            int     `json:"goroutines"`
+		} `json:"runtime"`
+	}
+	read := func() snapshot {
+		response, body := request(http.MethodGet, "/monitor", "application/json", true)
+		if response.StatusCode != 200 || !strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatal("invalid snapshot response")
+		}
+		var value snapshot
+		must(t, json.Unmarshal(body, &value))
+		return value
+	}
+	before := read()
+	if before.CollectedAt.IsZero() || before.HTTP.Requests != 31 || before.HTTP.InFlight != 0 || before.HTTP.Status["2xx"] != 26 || before.HTTP.Status["3xx"] != 1 || before.HTTP.Status["4xx"] != 2 || before.HTTP.Status["5xx"] != 2 {
+		t.Fatalf("HTTP metrics: %+v", before.HTTP)
+	}
+	if before.Runtime.GCPauseMetricsEnabled || before.Runtime.GCPauseTotalNS != nil || before.Runtime.Goroutines <= 0 {
+		t.Fatal("runtime/GC defaults changed")
+	}
+	// Wait for a genuinely fresh snapshot so caching cannot hide self-counting.
+	poll(t, func() bool {
+		after := read()
+		if !after.CollectedAt.After(before.CollectedAt) {
+			return false
+		}
+		if after.HTTP.Requests != before.HTTP.Requests {
+			t.Fatal("Monitor refresh counted itself")
+		}
+		return true
+	})
+}
+
+func TestMonitorAccessAndUptimePolicy(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+	defer target.Close()
+	for _, tlsEnabled := range []bool{false, true} {
+		for _, protect := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tls=%v/protect=%v", tlsEnabled, protect), func(t *testing.T) {
+				cfg, client := securityConfig(t, target.URL, "/status", tlsEnabled, true)
+				cfg.Monitor.Enabled = true
+				cfg.Auth.ProtectUptime = protect
+				client.Timeout = 10 * time.Second
+				server, err := New(cfg)
+				must(t, err)
+				running := startServerWithClient(t, server, client)
+				for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+					for _, path := range []string{"/monitor", "/monitor/", "/monitor/child", "/%6donitor", "/x/../monitor"} {
+						req, err := http.NewRequest(method, running.base+path, nil)
+						must(t, err)
+						req.Header.Set("Accept", "application/json")
+						response, err := client.Do(req)
+						must(t, err)
+						response.Body.Close()
+						assertChallenge(t, response)
+					}
+				}
+				for _, path := range []string{"/monitor%2fchild", "/%256donitor", "/Monitor", "/monitoring", "/monitor-page", "/api/status"} {
+					response := securityRequest(t, running, path, "", "")
+					response.Body.Close()
+					if response.StatusCode != 404 && response.StatusCode != 401 {
+						t.Fatalf("path alias exposed data: %s status=%d", path, response.StatusCode)
+					}
+				}
+				for _, path := range []string{"/alerts", "/alerts/", "/%61lerts", "/alerts/child"} {
+					response := securityRequest(t, running, path, "", "")
+					response.Body.Close()
+					assertChallenge(t, response)
+					response = securityRequest(t, running, path, securityUser, securityPassword)
+					response.Body.Close()
+					if response.StatusCode != 404 {
+						t.Fatal("reserved alerts namespace gained a handler")
+					}
+				}
+				for _, path := range []string{"/status", "/status/", "/status/api/status", "/%73tatus/api/status", "/x/../status/api/status"} {
+					response := securityRequest(t, running, path, "", "")
+					body, err := io.ReadAll(response.Body)
+					response.Body.Close()
+					must(t, err)
+					if protect {
+						assertChallenge(t, response)
+					} else if response.StatusCode != 200 {
+						t.Fatalf("public Uptime rejected: %s status=%d", path, response.StatusCode)
+					}
+					if bytes.Contains(body, []byte("password_hash")) || bytes.Contains(body, []byte("Authorization")) {
+						t.Fatal("Uptime leaked configuration")
+					}
+				}
+				for _, path := range []string{"/livez", "/readyz"} {
+					response := securityRequest(t, running, path, "", "")
+					response.Body.Close()
+					if response.StatusCode != 200 {
+						t.Fatal("Monitor changed public health")
+					}
+				}
+				for _, test := range []struct{ method, path, accept string }{{http.MethodGet, "/monitor", "text/html"}, {http.MethodGet, "/monitor", "application/json"}, {http.MethodHead, "/monitor/child", "application/json"}} {
+					req, err := http.NewRequest(test.method, running.base+test.path, nil)
+					must(t, err)
+					req.SetBasicAuth(securityUser, securityPassword)
+					req.Header.Set("Accept", test.accept)
+					response, err := client.Do(req)
+					must(t, err)
+					body, err := io.ReadAll(response.Body)
+					response.Body.Close()
+					must(t, err)
+					if response.StatusCode != 200 || !strings.HasPrefix(response.Header.Get("Content-Type"), test.accept) || test.method == http.MethodHead && len(body) != 0 {
+						t.Fatal("authorized Monitor failed")
+					}
+				}
+				response := securityRequest(t, running, "/monitor", "wrong", "wrong")
+				response.Body.Close()
+				assertChallenge(t, response)
+				running.cancel()
+				running.wait(t)
+				reopen(t, cfg.Storage.Bbolt.Path)
+			})
+		}
+	}
+}
+
+func TestMonitorDisabledAndGuard(t *testing.T) {
+	cfg := testConfig(t, "http://never-resolves.invalid/")
+	s := &Server{cfg: cfg, app: fiber.New()}
+	must(t, s.registerMiddleware())
+	for _, path := range []string{"/monitor", "/monitor/child", "/alerts"} {
+		response, err := s.app.Test(httptest.NewRequest(http.MethodGet, path, nil))
+		must(t, err)
+		response.Body.Close()
+		if response.StatusCode != 404 {
+			t.Fatal("disabled Monitor served a route")
+		}
+	}
+	cfg.Monitor.Enabled = true
+	s = &Server{cfg: cfg, app: fiber.New()}
+	if err := s.registerMiddleware(); err == nil {
+		t.Fatal("Monitor accepted missing auth")
+	}
 }

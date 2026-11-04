@@ -70,3 +70,54 @@ func TestBasicAuthUsername(t *testing.T) {
 		}
 	}
 }
+
+func TestMonitorAccessConfig(t *testing.T) {
+	old := mustLoad(t, []byte(minimal), emptyEnv)
+	if old.Monitor.Enabled || old.Auth != nil {
+		t.Fatal("old YAML enabled Monitor/auth")
+	}
+	hash := authHash(t)
+	base := map[string]any{"auth.enabled": true, "auth.basic.username": "admin", "auth.basic.password_hash": hash}
+	cfg := mustLoad(t, configData(t, base), emptyEnv)
+	if !cfg.Auth.ProtectUptime {
+		t.Fatal("old authenticated YAML became public")
+	}
+	base["monitor.enabled"] = true
+	cfg = mustLoad(t, configData(t, base), emptyEnv)
+	if !cfg.Monitor.Enabled || !cfg.Auth.ProtectUptime {
+		t.Fatal("Monitor mapping changed defaults")
+	}
+	base["auth.protect_uptime"] = false
+	cfg = mustLoad(t, configData(t, base), emptyEnv)
+	if cfg.Auth.ProtectUptime || !cfg.Monitor.Enabled {
+		t.Fatal("independent access selection lost")
+	}
+	for _, overrides := range []map[string]any{
+		{"monitor.enabled": true},
+		{"monitor.enabled": true, "auth.enabled": true, "auth.basic.username": "private", "auth.basic.password_hash": "SECRET"},
+		{"monitor.enabled": "true"}, {"monitor.enabled": nil}, {"auth.protect_uptime": "false"}, {"auth.protect_uptime": nil},
+	} {
+		_, err := load(configData(t, overrides), emptyEnv)
+		if err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "private") {
+			t.Fatalf("invalid or unsafe Monitor config: %v", err)
+		}
+	}
+	// Disabled auth stays inactive even when Monitor configuration is rejected.
+	_, err := load(configData(t, map[string]any{"monitor.enabled": true, "auth.basic.password_hash": "${INACTIVE}"}), func(string) (string, bool) { t.Fatal("inactive credentials expanded"); return "", false })
+	if err == nil || !strings.Contains(err.Error(), "monitor.enabled") {
+		t.Fatal("Monitor accepted disabled authentication")
+	}
+	for _, path := range []string{"/monitor", "/monitor/child", "/MONITOR", "/%6donitor", "/monitor%2fchild", "/alerts", "/alerts/child", "/%61lerts"} {
+		base["ui.path"] = path
+		wantInvalid(t, configData(t, base), emptyEnv, "ui.path")
+	}
+	for _, path := range []string{"/monitoring", "/monitor-page", "/alerts2", "/status"} {
+		base["ui.path"] = path
+		mustLoad(t, configData(t, base), emptyEnv)
+	}
+	// /monitor is available to Uptime when Monitor is disabled; /alerts is reserved.
+	base["monitor.enabled"], base["ui.path"] = false, "/monitor"
+	mustLoad(t, configData(t, base), emptyEnv)
+	base["ui.path"] = "/alerts"
+	wantInvalid(t, configData(t, base), emptyEnv, "ui.path")
+}

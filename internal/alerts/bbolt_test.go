@@ -437,3 +437,25 @@ func TestBboltRefusesMissingRuntimeIndex(t *testing.T) {
 		t.Fatal("partial count on index failure")
 	}
 }
+
+func TestBboltReadsDevelopReminderSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.db")
+	s, err := OpenBbolt(path, time.Second)
+	must(t, err)
+	i := reminderFixture()
+	i.ReminderPolicy = &ReminderPolicy{Interval: time.Second, MaxReminders: 100}
+	i.NextReminderAt = i.ConfirmedAt.Add(time.Second)
+	_, err = s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, s.Close())
+	s, err = OpenBbolt(path, time.Second)
+	must(t, err)
+	defer s.Close()
+	old, err := s.Get(t.Context(), i.ID)
+	must(t, err)
+	if old == nil || !sameReminderPolicy(old.ReminderPolicy, i.ReminderPolicy) {
+		t.Fatal("new YAML limits rejected existing develop snapshot")
+	}
+	_, err = s.ApplyReminder(t.Context(), ReminderChange{i.ID, 0, i.NextReminderAt})
+	must(t, err)
+}

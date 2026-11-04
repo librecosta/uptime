@@ -115,6 +115,21 @@ by the certificate. For Basic Auth, enable `auth.enabled` and supply its usernam
 and **bcrypt password hash**, never a plaintext password. For non-ASCII passwords,
 hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 
+### Process Monitor (develop)
+
+Set `monitor.enabled: true` to enable Fiber Contrib Monitor's native dashboard at
+`/monitor`, or request the same path with `Accept: application/json` for a snapshot.
+It shows process/system metrics and HTTP statistics, refreshes every three seconds,
+and excludes its own requests. Unsupported metrics follow upstream availability.
+It requires enabled Basic Auth with valid credentials; use HTTPS for remote access.
+
+`auth.protect_uptime` defaults to `true`. Setting it to `false` publishes both the
+Uptime dashboard and `<ui.path>/api/status`, while Monitor remains authenticated.
+The `/alerts` namespace is reserved; no history page is implemented. Monitor is
+off by default, with no middleware or ongoing collection; its system dependency
+still performs one-time initialization. These options are on `develop`, outside
+the v0.1.0 downloads above.
+
 ## Alerts (v0.2.0 development)
 
 The `develop` branch adds optional DOWN/RECOVERED notifications through Generic
@@ -124,7 +139,9 @@ Enable `alerts.enabled`, define stable channel IDs in `alerts.channels`, and
 optionally select `alert_channels` for each endpoint. Omission selects all channels;
 `[]` sends none. The consecutive failure threshold defaults to three. On `develop`,
 `alerts.recovery_successes` sets the consecutive successes required to resolve an
-incident (1–10, default one). Restart to apply configuration changes.
+incident (1–10, default one). Optional reminders require `alerts.reminder_interval`
+from `5m` through `720h` (30 days) and `alerts.reminder_limit` from 1 through 10;
+`0s` and `0` disable them. Restart to apply configuration changes.
 
 Run **one alert executor per database/Redis prefix**. Incidents and delivery tasks
 persist separately from monitoring history: bbolt uses a sibling `alerts.db`, which
@@ -209,6 +226,8 @@ The deployment guides cover secure exposure, upgrades, and offline bbolt backups
 [**Fiber Contrib Uptime**](https://github.com/gofiber/contrib/tree/main/v3/uptime)
 is the monitoring engine behind LibreCosta Uptime, providing endpoint probes,
 the dashboard, and the status API.
+[**Fiber Contrib Monitor**](https://github.com/gofiber/contrib/tree/main/v3/monitor)
+provides the optional process and HTTP dashboard.
 
 ## License
 

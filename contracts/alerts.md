@@ -376,8 +376,10 @@ These in-process alerts cannot detect the monitor's complete process failure.
   receipt or overwriting SKIPPED. Unavailable, mismatched or invalid reads retain
   the same Outcome/AttemptID for reconciliation and never authorize a resend.
 - YAML `alerts.reminder_interval: 0s` and `reminder_limit: 0` disable reminders.
-  Enabled reminders require an interval of at least one second and a limit 1..100;
-  the bounded limit keeps cancellation transactions finite. Inactive alerts do not
+  Enabled reminders require an interval of 5 minutes through 30 days (`5m`..`720h`)
+  and a limit 1..10. This validation applies to new configuration only: snapshots
+  previously persisted on develop (including 1s intervals and limits up to 100)
+  remain readable and keep their frozen policy. Inactive alerts do not
   resolve reminder environment variables. Config check never opens or migrates data.
 - New DOWN freezes the configured policy and initial deadline. Existing incidents
   retain their snapshot, including nil for pre-upgrade incidents. Engine uses
