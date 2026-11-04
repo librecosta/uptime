@@ -163,7 +163,9 @@ writers before removing a service. Alert state uses the independent
 `<storage.redis.key_prefix>:alerts:v1:` namespace in the same configured database.
 Back up monitoring and alert keys together using Redis's own RDB/AOF and restore
 procedures, coordinated with its operator. Neither a bbolt copy nor a service
-export backs up Redis; there is no application backup or migration job.
+export backs up Redis; there is no application backup job. Alert schema upgrades
+run before workers start; see the
+[alert migration contract](../../contracts/alerts.md#alert-schema-v2-migration-and-history).
 
 To upgrade, pull the chosen version from GHCR and verify its version with
 `docker run --rm <image> version`. Stop, back up, then
@@ -171,8 +173,10 @@ To upgrade, pull the chosen version from GHCR and verify its version with
 volume and configuration** and the new image. Recreate the container after editing
 bind-mounted configuration too, so atomically replaced files are remounted; there
 is no hot reload. Never copy a live bbolt file or run
-two serving containers against it. No automatic migration, backup or update is
-performed; retain the prior binary/image and offline backup until verification.
+two serving containers against it. Alert Schema v1 upgrades to v2 on enabled
+startup; stop all writers first and see the
+[migration contract](../../contracts/alerts.md#alert-schema-v2-migration-and-history).
+No automatic backup or update is performed; retain the prior binary/image and offline backup until verification.
 
 ## Optional: build from source
 

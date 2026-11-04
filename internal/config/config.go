@@ -87,6 +87,8 @@ type AlertsConfig struct {
 	Enabled             bool
 	ConsecutiveFailures int
 	RecoverySuccesses   int
+	ReminderInterval    time.Duration        // Zero disables reminders; otherwise at least one second.
+	ReminderLimit       int                  // Zero when disabled; otherwise 1 through 100, frozen per incident.
 	Channels            []AlertChannelConfig // nil when disabled; contains credentials, never log.
 }
 

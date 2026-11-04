@@ -49,6 +49,10 @@ alerts:
   enabled: false
   consecutive_failures: 3 # 1 through 10; confirms an incident.
   recovery_successes: 1 # 1 through 10; consecutive successes needed to resolve it.
+  # Both zero disables reminders. When enabled: interval >= 1s, limit 1 through 100.
+  # The policy is frozen for each new incident; existing incidents keep theirs.
+  reminder_interval: 0s
+  reminder_limit: 0
   channels: []
   # Replace [] with channels as needed; keep IDs stable for incident snapshots.
   # channels:

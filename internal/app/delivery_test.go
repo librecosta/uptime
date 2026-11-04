@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/contrib/v3/uptime"
 	"github.com/gofiber/fiber/v3/log"
 	"github.com/librecosta/uptime/internal/alerts"
 	"github.com/librecosta/uptime/internal/config"
@@ -684,6 +685,15 @@ func (s *reminderCancelStore) GetTask(context.Context, string) (*alerts.Task, er
 	task := s.task
 	return &task, nil
 }
+func (s *reminderCancelStore) ReadDelivery(_ context.Context, _ string, _ time.Time) (*alerts.Task, *alerts.Incident, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.Status != alerts.TaskPending {
+		return nil, nil, nil
+	}
+	task, i := s.task, s.incident
+	return &task, &i, nil
+}
 func (s *reminderCancelStore) QueryDue(context.Context, alerts.DueQuery) (alerts.TaskPage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -795,5 +805,74 @@ func TestDeliveryRestartResumesPending(t *testing.T) {
 	must(t, err)
 	if calls.Load() != 1 || active == nil || active.ID != i.ID {
 		t.Fatal("restart duplicated incident or attempt")
+	}
+}
+
+func TestReminderHookToDelivery(t *testing.T) {
+	store := testAlertBbolt(t)
+	received := make(chan alerts.Task, 4)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p struct {
+			Type       alerts.EventType `json:"event_type"`
+			Sequence   int              `json:"reminder_sequence"`
+			IncidentID string           `json:"incident_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		received <- alerts.Task{Type: p.Type, ReminderSequence: p.Sequence, IncidentID: p.IncidentID}
+		w.WriteHeader(204)
+	}))
+	defer webhook.Close()
+	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}, Alerts: config.AlertsConfig{Enabled: true, ConsecutiveFailures: 1, RecoverySuccesses: 1, ReminderInterval: time.Minute, ReminderLimit: 2, Channels: []config.AlertChannelConfig{{ID: "ops", Type: "webhook", Webhook: &notify.WebhookConfig{URL: webhook.URL}}}}, Endpoints: []config.EndpointConfig{{ID: "probe", AlertChannels: []string{"ops"}}}}
+	r, err := newAlertRuntime(store, func() error { return nil }, cfg, 16)
+	must(t, err)
+	defer r.stop(time.Second)
+	at := time.Now().UTC().Add(-5 * time.Minute)
+	r.hook(t.Context(), uptime.ProbeResult{EndpointID: "probe", CheckedAt: at, StatusCode: 500})
+	poll(t, func() bool {
+		tasks, err := store.Outbox(t.Context())
+		must(t, err)
+		return len(tasks) == 1 && tasks[0].Status == alerts.TaskSent
+	})
+	r.hook(t.Context(), uptime.ProbeResult{EndpointID: "probe", CheckedAt: at.Add(time.Minute), StatusCode: 500})
+	poll(t, func() bool {
+		tasks, err := store.Outbox(t.Context())
+		must(t, err)
+		for _, task := range tasks {
+			if task.Type == alerts.Reminder {
+				return task.Status == alerts.TaskSent
+			}
+		}
+		return false
+	})
+	r.hook(t.Context(), uptime.ProbeResult{EndpointID: "probe", CheckedAt: at.Add(90 * time.Second), StatusCode: 200, Success: true})
+	poll(t, func() bool {
+		tasks, err := store.Outbox(t.Context())
+		must(t, err)
+		for _, task := range tasks {
+			if task.Type == alerts.Recovered {
+				return task.Status == alerts.TaskSent
+			}
+		}
+		return false
+	})
+	must(t, r.stop(time.Second))
+	var incidentID string
+	for _, kind := range []alerts.EventType{alerts.Down, alerts.Reminder, alerts.Recovered} {
+		select {
+		case task := <-received:
+			if task.Type != kind {
+				t.Fatalf("unexpected delivery order: %s", task.Type)
+			}
+			if incidentID == "" {
+				incidentID = task.IncidentID
+			}
+			if task.IncidentID != incidentID || kind == alerts.Reminder && task.ReminderSequence != 1 {
+				t.Fatal("identity changed")
+			}
+		default:
+			t.Fatal("missing webhook event")
+		}
 	}
 }

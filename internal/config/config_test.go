@@ -522,3 +522,28 @@ func TestLoadFileAndRelativePaths(t *testing.T) {
 		t.Fatal("directory read succeeded")
 	}
 }
+
+func TestReminderConfig(t *testing.T) {
+	cfg := mustLoad(t, configData(t, map[string]any{"alerts.enabled": true}), emptyEnv)
+	if cfg.Alerts.ReminderInterval != 0 || cfg.Alerts.ReminderLimit != 0 {
+		t.Fatal("reminders enabled by default")
+	}
+	cfg = mustLoad(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.reminder_interval": "5m", "alerts.reminder_limit": 4}), emptyEnv)
+	if cfg.Alerts.ReminderInterval != 5*time.Minute || cfg.Alerts.ReminderLimit != 4 {
+		t.Fatal("reminder mapping")
+	}
+	for _, tc := range []struct {
+		interval string
+		limit    int
+		field    string
+	}{
+		{"bad", 1, "alerts.reminder_interval"}, {"-1s", 1, "alerts.reminder_interval"}, {"1ms", 1, "alerts.reminder_interval"},
+		{"0s", 1, "alerts.reminder_limit"}, {"1m", 0, "alerts.reminder_limit"}, {"1m", 101, "alerts.reminder_limit"},
+	} {
+		wantInvalid(t, configData(t, map[string]any{"alerts.enabled": true, "alerts.reminder_interval": tc.interval, "alerts.reminder_limit": tc.limit}), emptyEnv, tc.field)
+	}
+	cfg = mustLoad(t, configData(t, map[string]any{"alerts.enabled": false, "alerts.reminder_interval": "${UNSET_PRIVATE}"}), emptyEnv)
+	if cfg.Alerts.ReminderInterval != 0 || cfg.Alerts.ReminderLimit != 0 {
+		t.Fatal("inactive reminder config resolved")
+	}
+}

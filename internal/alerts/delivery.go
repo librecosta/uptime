@@ -90,6 +90,9 @@ type TaskPage struct {
 // or exactly-once external delivery, and a due page is not a reservation.
 type DeliveryStore interface {
 	GetTask(context.Context, string) (*Task, error)
+	// ReadDelivery atomically rechecks the current task, incident and dependencies.
+	// A nil task means it is no longer ready; it is not a reservation.
+	ReadDelivery(context.Context, string, time.Time) (*Task, *Incident, error)
 	QueryDue(context.Context, DueQuery) (TaskPage, error)
 	RecordOutcome(context.Context, Outcome) (Task, error)
 }
@@ -227,9 +230,10 @@ func deliverable(t Task, down *Task, now time.Time) bool {
 }
 
 // skipRecovery is used both when recovery is created after DOWN failed and when
-// DOWN fails after recovery already exists. Backends keep the writes atomic.
+// DOWN fails after recovery already exists. The same rule skips numbered
+// reminders. Backends keep these writes atomic.
 func skipRecovery(task Task, down *Task) (Task, error) {
-	if task.Type != Recovered || down == nil || down.EventID != eventID(task.IncidentID, Down, task.ChannelID) {
+	if (task.Type != Recovered && task.Type != Reminder) || down == nil || down.EventID != eventID(task.IncidentID, Down, task.ChannelID) {
 		return Task{}, ErrInvalid
 	}
 	if task.Status == TaskPending && (down.Status == TaskFailed || down.Status == TaskSkipped) {

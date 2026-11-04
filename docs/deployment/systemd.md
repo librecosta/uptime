@@ -115,8 +115,10 @@ sudo systemctl start librecosta-uptime
 curl --fail http://127.0.0.1:18580/readyz
 ```
 
-Do not copy live bbolt files. There is no schema migration or automatic backup
-task. With Redis, alert state uses the independent
+Do not copy live bbolt files. Enabled alert storage upgrades Schema v1 to v2
+before workers start; stop all writers first and follow the
+[alert migration contract](../../contracts/alerts.md#alert-schema-v2-migration-and-history).
+There is no automatic backup task. With Redis, alert state uses the independent
 `<storage.redis.key_prefix>:alerts:v1:` namespace in the same database; back up
 monitoring and alert keys together through the Redis operator's RDB/AOF procedure.
 
@@ -151,4 +153,5 @@ exit before alert storage closes, followed by monitoring storage. Increase
 `TimeoutStopSec` when increasing `server.shutdown_timeout`. A systemd
 stop timeout can still force termination; it cannot make blocked I/O safe.
 Keep the previous binary and offline backup until the upgrade is verified.
-There are no install/uninstall CLI commands, automatic upgrades or migrations.
+There are no install/uninstall CLI commands or automatic binary upgrades.
+After an alert schema upgrade, rollback requires the complete pre-upgrade backup.

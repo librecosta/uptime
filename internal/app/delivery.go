@@ -172,10 +172,13 @@ func (d *deliveryWorker) scan(ctx context.Context) {
 
 func (d *deliveryWorker) deliver(ctx context.Context, candidate alerts.Task) {
 	opCtx, cancel := context.WithTimeout(ctx, d.opTimeout)
-	task, err := d.store.GetTask(opCtx, candidate.EventID)
+	task, incident, err := d.store.ReadDelivery(opCtx, candidate.EventID, d.now())
 	cancel()
-	if err != nil || task == nil {
+	if err != nil {
 		d.report(candidate.EventID, candidate.ChannelID, alerts.ErrorUnavailable)
+		return
+	}
+	if task == nil {
 		return
 	}
 	// HSCAN can repeat records, and a resumed page can contain stale tasks.
@@ -189,13 +192,6 @@ func (d *deliveryWorker) deliver(ctx context.Context, candidate alerts.Task) {
 	}
 	bot := d.botKeys[task.ChannelID]
 	if bot != "" && d.now().Before(d.nextBotSend[bot]) {
-		return
-	}
-	opCtx, cancel = context.WithTimeout(ctx, d.opTimeout)
-	incident, err := d.incidents.Get(opCtx, task.IncidentID)
-	cancel()
-	if err != nil || incident == nil {
-		d.report(task.EventID, task.ChannelID, alerts.ErrorUnavailable)
 		return
 	}
 	if ctx.Err() != nil {

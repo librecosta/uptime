@@ -32,6 +32,8 @@ type rawConfig struct {
 		Enabled             bool              `yaml:"enabled"`
 		ConsecutiveFailures *int              `yaml:"consecutive_failures"`
 		RecoverySuccesses   *int              `yaml:"recovery_successes"`
+		ReminderInterval    *string           `yaml:"reminder_interval"`
+		ReminderLimit       *int              `yaml:"reminder_limit"`
 		Channels            []rawAlertChannel `yaml:"channels"`
 	} `yaml:"alerts"`
 	UI struct {
@@ -100,6 +102,8 @@ func (r *rawConfig) defaults() {
 	defaultTo(&r.Uptime.Timezone, "UTC")
 	defaultTo(&r.Alerts.ConsecutiveFailures, 3)
 	defaultTo(&r.Alerts.RecoverySuccesses, 1)
+	defaultTo(&r.Alerts.ReminderInterval, "0s")
+	defaultTo(&r.Alerts.ReminderLimit, 0)
 	defaultTo(&r.UI.Path, "/uptime")
 	defaultTo(&r.UI.Title, "Service Status")
 	defaultTo(&r.UI.Description, "Current service availability.")

@@ -213,7 +213,7 @@ func TestRedisIntegrationAlertDelivery(t *testing.T) {
 
 func TestRedisIntegrationAlertStartupFailure(t *testing.T) {
 	redisURL := redisIntegrationURL(t)
-	for _, suffix := range []string{"incidents", "active", "outbox"} {
+	for _, suffix := range []string{"incidents", "active", "outbox", "history", "meta"} {
 		t.Run(suffix, func(t *testing.T) {
 			prefix := redisIntegrationPrefix(t, redisURL)
 			cfg := redisIntegrationConfig(t, redisURL, prefix, "target", "http://never-resolves.invalid/")

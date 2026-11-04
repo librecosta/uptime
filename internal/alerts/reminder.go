@@ -9,7 +9,8 @@ import (
 )
 
 // ReminderPolicy is an immutable incident snapshot. A nil snapshot disables
-// reminders, including for legacy incidents. Schema v1 cannot persist it.
+// reminders, including for legacy incidents. Interval must be positive and
+// MaxReminders must be 1 through 100.
 type ReminderPolicy struct {
 	Interval     time.Duration `json:"interval"`
 	MaxReminders int           `json:"max_reminders"`
@@ -27,7 +28,7 @@ func validateReminders(i Incident) error {
 		return nil
 	}
 	p := i.ReminderPolicy
-	if p.Interval <= 0 || p.MaxReminders <= 0 || i.ReminderCount < 0 || i.ReminderCount > p.MaxReminders || !validTime(i.FirstFailureAt) || !validTime(i.ConfirmedAt) || !i.RecoveredAt.IsZero() && !validTime(i.RecoveredAt) {
+	if p.Interval <= 0 || p.MaxReminders <= 0 || p.MaxReminders > 100 || i.ReminderCount < 0 || i.ReminderCount > p.MaxReminders || !validTime(i.FirstFailureAt) || !validTime(i.ConfirmedAt) || !i.RecoveredAt.IsZero() && !validTime(i.RecoveredAt) {
 		return ErrInvalid
 	}
 	if !i.RecoveredAt.IsZero() || i.ReminderCount == p.MaxReminders {
@@ -60,8 +61,8 @@ func (t Task) ValidateReminder(i Incident) error {
 }
 
 // PrepareReminder is pure. Only a due, real failed observation advances a frozen
-// policy, at most once regardless of downtime. B2 must call it inside an atomic
-// reminder transaction; Engine and Schema v1 deliberately never call it.
+// policy, at most once regardless of downtime. Persistence calls this inside the
+// conditional reminder transaction.
 func PrepareReminder(i Incident, o Observation) (Incident, []Task, error) {
 	if err := validateIncident(i); err != nil {
 		return Incident{}, nil, err

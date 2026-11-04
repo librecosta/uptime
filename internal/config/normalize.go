@@ -162,6 +162,17 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 	if cfg.Alerts.RecoverySuccesses < 1 || cfg.Alerts.RecoverySuccesses > 10 {
 		n.fail("alerts.recovery_successes", "expected an integer from 1 through 10")
 	}
+	if cfg.Alerts.Enabled {
+		interval, err := time.ParseDuration(n.text("alerts.reminder_interval", raw.Alerts.ReminderInterval, true))
+		limit := *raw.Alerts.ReminderLimit
+		if err != nil || interval < 0 || interval > 0 && interval < time.Second {
+			n.fail("alerts.reminder_interval", "expected zero or a duration of at least one second")
+		} else if limit < 0 || limit > 100 || (interval == 0) != (limit == 0) {
+			n.fail("alerts.reminder_limit", "use zero with disabled reminders, otherwise 1 through 100")
+		} else {
+			cfg.Alerts.ReminderInterval, cfg.Alerts.ReminderLimit = interval, limit
+		}
+	}
 	channelIDs := n.alertChannels(raw, &cfg.Alerts)
 
 	cfg.UI.Path = n.text("ui.path", raw.UI.Path, true)

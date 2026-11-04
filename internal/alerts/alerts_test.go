@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1033,6 +1034,345 @@ func TestDeliveryReconciliation(t *testing.T) {
 			must(t, err)
 			if retried.Attempts != 1 {
 				t.Fatal("reconciliation duplicated attempt")
+			}
+		})
+	}
+}
+
+// Both real backends run the same durable reminder and dependency contract.
+func exerciseReminders(t *testing.T, s deliveryTestStore) {
+	t.Helper()
+	ctx := t.Context()
+	i := reminderFixture()
+	i.ID = "durable-reminders"
+	i.EndpointID = i.ID
+	i.ReminderPolicy = &ReminderPolicy{Interval: time.Minute, MaxReminders: 3}
+	i.NextReminderAt = i.ConfirmedAt.Add(time.Minute)
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	change := ReminderChange{i.ID, 0, i.NextReminderAt.Add(time.Hour)}
+	i, err = s.ApplyReminder(ctx, change)
+	must(t, err)
+	if i.ReminderCount != 1 || !i.NextReminderAt.Equal(change.CheckedAt.Add(time.Minute)) {
+		t.Fatal("catch-up generated multiple events or kept old deadline")
+	}
+	_, err = s.ApplyReminder(ctx, change)
+	must(t, err)
+	changed := change
+	changed.CheckedAt = changed.CheckedAt.Add(time.Second)
+	if _, err = s.ApplyReminder(ctx, changed); !errors.Is(err, ErrConflict) {
+		t.Fatal("conflicting occurrence accepted")
+	}
+	id1, _ := ReminderEventID(i.ID, 1, "a")
+	if task, _, err := s.ReadDelivery(ctx, id1, change.CheckedAt); err != nil || task != nil {
+		t.Fatal("reminder sent before DOWN")
+	}
+	down := readTask(t, s, i, Down, "a")
+	_, err = s.RecordOutcome(ctx, deliveryOutcome(down, TaskSent, i.ConfirmedAt))
+	must(t, err)
+	other := readTask(t, s, i, Down, "b")
+	_, err = s.RecordOutcome(ctx, deliveryOutcome(other, TaskFailed, i.ConfirmedAt))
+	must(t, err)
+	skipped, err := s.GetTask(ctx, func() string { id, _ := ReminderEventID(i.ID, 1, "b"); return id }())
+	must(t, err)
+	if skipped.Status != TaskSkipped || skipped.Attempts != 0 {
+		t.Fatal("DOWN failure did not atomically skip reminder")
+	}
+	first, err := s.GetTask(ctx, id1)
+	must(t, err)
+	prior := deliveryOutcome(*first, TaskPending, first.OccurredAt)
+	pending, err := s.RecordOutcome(ctx, prior)
+	must(t, err)
+	i, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 1, i.NextReminderAt})
+	must(t, err)
+	id2, _ := ReminderEventID(i.ID, 2, "a")
+	if task, _, err := s.ReadDelivery(ctx, id2, i.NextReminderAt); err != nil || task != nil {
+		t.Fatal("second reminder bypassed first retry")
+	}
+	failed := deliveryOutcome(pending, TaskFailed, pending.NextAttemptAt)
+	_, err = s.RecordOutcome(ctx, failed)
+	must(t, err)
+	second, _, err := s.ReadDelivery(ctx, id2, i.NextReminderAt)
+	must(t, err)
+	if second == nil || second.ReminderSequence != 2 || second.Attempts != 0 {
+		t.Fatal("failed predecessor blocked next sequence")
+	}
+	old := deliveryOutcome(*second, TaskPending, second.OccurredAt)
+	pending, err = s.RecordOutcome(ctx, old)
+	must(t, err)
+	i, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 2, i.NextReminderAt})
+	must(t, err)
+	if i.ReminderCount != 3 || !i.NextReminderAt.IsZero() {
+		t.Fatal("limit did not exhaust")
+	}
+	if _, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 3, change.CheckedAt.Add(24 * time.Hour)}); !errors.Is(err, ErrConflict) {
+		t.Fatal("limit exceeded")
+	}
+	i.RecoveredAt = change.CheckedAt.Add(3 * time.Minute)
+	i.NextReminderAt = time.Time{}
+	_, err = s.Apply(ctx, Transition{Recovered, i})
+	must(t, err)
+	canceled, err := s.GetTask(ctx, id2)
+	must(t, err)
+	matched, err := canceled.HasOutcome(old)
+	must(t, err)
+	if canceled.Status != TaskSkipped || canceled.LastErrorCode != ErrorIncidentRecovered || canceled.Attempts != 1 || !matched {
+		t.Fatal("recovery destroyed retry history")
+	}
+	late := deliveryOutcome(pending, TaskSent, i.RecoveredAt.Add(time.Second))
+	if _, err = s.RecordOutcome(ctx, late); !errors.Is(err, ErrConflict) {
+		t.Fatal("late outcome overwrote cancellation")
+	}
+	ok, err := canceled.CanceledByRecovery(i, late)
+	must(t, err)
+	if !ok {
+		t.Fatal("cancellation not reconcilable")
+	}
+	recovery := readTask(t, s, i, Recovered, "a")
+	ready, _, err := s.ReadDelivery(ctx, recovery.EventID, i.RecoveredAt)
+	must(t, err)
+	if ready == nil {
+		t.Fatal("canceled reminders blocked recovery")
+	}
+	if readTask(t, s, i, Recovered, "b").Status != TaskSkipped {
+		t.Fatal("late recovery ignored failed DOWN")
+	}
+	_, err = s.ApplyReminder(ctx, change)
+	must(t, err) // Replay remains safe after recovery.
+}
+func TestBboltDurableReminders(t *testing.T) { exerciseReminders(t, testBbolt(t)) }
+
+func exerciseReminderRace(t *testing.T, s deliveryTestStore) {
+	t.Helper()
+	ctx := t.Context()
+	for n := range 8 {
+		i := reminderFixture()
+		i.ID = fmt.Sprintf("reminder-race-%d", n)
+		i.EndpointID = i.ID
+		i.ChannelIDs = []string{"a"}
+		_, err := s.Apply(ctx, Transition{Down, i})
+		must(t, err)
+		down := readTask(t, s, i, Down, "a")
+		_, err = s.RecordOutcome(ctx, deliveryOutcome(down, TaskSent, i.ConfirmedAt))
+		must(t, err)
+		c := ReminderChange{i.ID, 0, i.NextReminderAt}
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				_, err := s.ApplyReminder(ctx, c)
+				if err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		wg.Wait()
+		stored, err := s.Get(ctx, i.ID)
+		must(t, err)
+		i = *stored
+		id, _ := ReminderEventID(i.ID, 1, "a")
+		task, err := s.GetTask(ctx, id)
+		must(t, err)
+		i.RecoveredAt = c.CheckedAt.Add(time.Second)
+		i.NextReminderAt = time.Time{}
+		o := deliveryOutcome(*task, TaskSent, i.RecoveredAt)
+		wg.Go(func() {
+			_, err := s.Apply(ctx, Transition{Recovered, i})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+		wg.Go(func() {
+			_, err := s.RecordOutcome(ctx, o)
+			if err != nil && !errors.Is(err, ErrConflict) {
+				t.Error(err)
+			}
+		})
+		wg.Wait()
+		final, err := s.GetTask(ctx, id)
+		must(t, err)
+		if final.Status != TaskSent && final.Status != TaskSkipped {
+			t.Fatal("illegal race result")
+		}
+		if final.Status == TaskSkipped && final.Attempts != 0 {
+			t.Fatal("cancellation invented attempt")
+		}
+	}
+}
+func TestBboltReminderRace(t *testing.T) { exerciseReminderRace(t, testBbolt(t)) }
+
+func exerciseHistory(t *testing.T, s interface {
+	Store
+	HistoryStore
+}) {
+	t.Helper()
+	ctx := t.Context()
+	empty, err := s.ListIncidents(ctx, HistoryQuery{})
+	must(t, err)
+	if len(empty.Incidents) != 0 || empty.NextCursor != "" {
+		t.Fatal("nonempty initial history")
+	}
+	var want []string
+	for n := range 25 {
+		id := fmt.Sprintf("history-%02d", n)
+		i := testIncident(id, id)
+		i.FirstFailureAt = testTime
+		i.ConfirmedAt = testTime.Add(time.Duration(n/3) * time.Second)
+		_, err := s.Apply(ctx, Transition{Down, i})
+		must(t, err)
+		want = append([]string{id}, want...)
+	}
+	var got []string
+	cursor := ""
+	pages := 0
+	for {
+		page, err := s.ListIncidents(ctx, HistoryQuery{Limit: 2, Cursor: cursor})
+		must(t, err)
+		for _, i := range page.Incidents {
+			got = append(got, i.ID)
+		}
+		pages++
+		cursor = page.NextCursor
+		if cursor == "" {
+			break
+		}
+		if pages > 20 {
+			t.Fatal("history cursor loop")
+		}
+	}
+	defaultPage, err := s.ListIncidents(ctx, HistoryQuery{})
+	must(t, err)
+	if len(defaultPage.Incidents) != 20 || defaultPage.NextCursor == "" {
+		t.Fatal("default history limit")
+	}
+	maxPage, err := s.ListIncidents(ctx, HistoryQuery{Limit: 50})
+	must(t, err)
+	if len(maxPage.Incidents) != 25 || maxPage.NextCursor != "" {
+		t.Fatal("maximum history page")
+	}
+	if !slices.Equal(got, want) || pages != 13 {
+		t.Fatalf("history paging: got %v want %v", got, want)
+	}
+	key, err := historyKey(Incident{ID: want[len(want)-1], ConfirmedAt: testTime})
+	must(t, err)
+	page, err := s.ListIncidents(ctx, HistoryQuery{Cursor: historyCursor(key)})
+	must(t, err)
+	if len(page.Incidents) != 0 || page.NextCursor != "" {
+		t.Fatal("nonempty end page")
+	}
+	for _, q := range []HistoryQuery{{Limit: -1}, {Limit: 51}, {Cursor: "invalid"}, {Cursor: strings.Repeat("x", 1025)}} {
+		if _, err := s.ListIncidents(ctx, q); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid history cursor accepted")
+		}
+	}
+}
+func TestBboltHistory(t *testing.T) { exerciseHistory(t, testBbolt(t)) }
+
+func exerciseReminderEngine(t *testing.T, s deliveryTestStore) {
+	t.Helper()
+	ctx := t.Context()
+	e, err := NewEngine(s, nil)
+	must(t, err)
+	policy := Policy{FailureThreshold: 1, RecoverySuccesses: 2, ChannelIDs: []string{"a"}, ReminderPolicy: &ReminderPolicy{Interval: time.Minute, MaxReminders: 2}}
+	at := testTime
+	_, err = e.Observe(ctx, Observation{EndpointID: "engine", CheckedAt: at}, policy)
+	must(t, err)
+	// Changing live config cannot replace the frozen policy.
+	policy.ReminderPolicy = nil
+	_, err = e.Observe(ctx, Observation{EndpointID: "engine", CheckedAt: at.Add(time.Minute), Gap: true}, policy)
+	must(t, err)
+	_, err = e.Observe(ctx, Observation{EndpointID: "engine", CheckedAt: at.Add(2 * time.Minute), Success: true}, policy)
+	must(t, err)
+	i, err := s.Active(ctx, "engine")
+	must(t, err)
+	if i.ReminderCount != 0 {
+		t.Fatal("success or gap issued reminder")
+	}
+	// Restart resets the unconfirmed recovery count but preserves the deadline.
+	e, err = NewEngine(s, nil)
+	must(t, err)
+	_, err = e.Observe(ctx, Observation{EndpointID: "engine", CheckedAt: at.Add(time.Hour)}, policy)
+	must(t, err)
+	i, err = s.Active(ctx, "engine")
+	must(t, err)
+	if i.ReminderCount != 1 || !i.NextReminderAt.Equal(at.Add(time.Hour+time.Minute)) {
+		t.Fatal("restart reminder schedule")
+	}
+	_, err = e.Observe(ctx, Observation{EndpointID: "engine", CheckedAt: i.NextReminderAt}, policy)
+	must(t, err)
+	i, err = s.Active(ctx, "engine")
+	must(t, err)
+	if i.ReminderCount != 2 || !i.NextReminderAt.IsZero() {
+		t.Fatal("restart limit")
+	}
+	legacy := testIncident("legacy-firing", "legacy-firing")
+	_, err = s.Apply(ctx, Transition{Down, legacy})
+	must(t, err)
+	policy.ReminderPolicy = &ReminderPolicy{Interval: time.Second, MaxReminders: 1}
+	_, err = e.Observe(ctx, Observation{EndpointID: legacy.EndpointID, CheckedAt: at.Add(24 * time.Hour)}, policy)
+	must(t, err)
+	old, err := s.Active(ctx, legacy.EndpointID)
+	must(t, err)
+	if old.ReminderPolicy != nil || old.ReminderCount != 0 {
+		t.Fatal("legacy incident acquired policy")
+	}
+}
+func TestBboltReminderEngine(t *testing.T) { exerciseReminderEngine(t, testBbolt(t)) }
+
+type faultyReminderStore struct {
+	deliveryTestStore
+	before, after, read bool
+	changes             []ReminderChange
+}
+
+func (s *faultyReminderStore) ApplyReminder(ctx context.Context, c ReminderChange) (Incident, error) {
+	s.changes = append(s.changes, c)
+	if s.before {
+		return Incident{}, errInjected
+	}
+	i, err := s.deliveryTestStore.ApplyReminder(ctx, c)
+	if err == nil && s.after {
+		return Incident{}, errInjected
+	}
+	return i, err
+}
+func (s *faultyReminderStore) Get(ctx context.Context, id string) (*Incident, error) {
+	if s.read {
+		return nil, errInjected
+	}
+	return s.deliveryTestStore.Get(ctx, id)
+}
+func TestReminderUncertainReconciliation(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprint(committed), func(t *testing.T) {
+			base := testBbolt(t)
+			i := reminderFixture()
+			_, err := base.Apply(t.Context(), Transition{Down, i})
+			must(t, err)
+			store := &faultyReminderStore{deliveryTestStore: base, before: !committed, after: committed, read: true}
+			e, err := NewEngine(store, nil)
+			must(t, err)
+			o := Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt}
+			if _, err = e.Observe(t.Context(), o, Policy{}); !errors.Is(err, errInjected) {
+				t.Fatal("unknown result hidden")
+			}
+			actual, err := base.Get(t.Context(), i.ID)
+			must(t, err)
+			if (actual.ReminderCount == 1) != committed {
+				t.Fatal("fault injection did not exercise requested commit")
+			}
+			store.before, store.after, store.read = false, false, false
+			o.CheckedAt = o.CheckedAt.Add(time.Second)
+			_, err = e.Observe(t.Context(), o, Policy{})
+			must(t, err)
+			actual, err = base.Get(t.Context(), i.ID)
+			must(t, err)
+			if actual.ReminderCount != 1 || len(store.changes) != 2 || store.changes[0] != store.changes[1] {
+				t.Fatal("reconciliation changed count/time identity")
+			}
+			tasks, err := base.Outbox(t.Context())
+			must(t, err)
+			if len(tasks) != 4 {
+				t.Fatal("uncertain reminder duplicated or omitted tasks")
 			}
 		})
 	}

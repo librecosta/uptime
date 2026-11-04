@@ -31,7 +31,7 @@ type EventType string
 const (
 	Down      EventType = "DOWN"
 	Recovered EventType = "RECOVERED"
-	// Reminder identifies a numbered reminder; Schema v1 never emits it.
+	// Reminder identifies a numbered, observation-triggered reminder.
 	Reminder EventType = "REMINDER"
 )
 
@@ -56,6 +56,7 @@ type Policy struct {
 	FailureThreshold  int // Zero selects three; otherwise 1 through 10.
 	RecoverySuccesses int // Zero selects one; otherwise 1 through 10. Counts are volatile.
 	ChannelIDs        []string
+	ReminderPolicy    *ReminderPolicy // Frozen only when a new incident is confirmed.
 }
 
 // Incident stores a stable random identity and immutable channel ID snapshot.
@@ -105,6 +106,7 @@ type Store interface {
 	Active(context.Context, string) (*Incident, error)
 	Get(context.Context, string) (*Incident, error)
 	Apply(context.Context, Transition) (Incident, error)
+	ApplyReminder(context.Context, ReminderChange) (Incident, error)
 	Outbox(context.Context) ([]Task, error)
 }
 
@@ -166,8 +168,9 @@ func advance(m machine, o Observation, threshold, recoverySuccesses int) (machin
 }
 
 type pendingTransition struct {
-	change Transition
-	next   machine
+	change   Transition
+	reminder *ReminderChange
+	next     machine
 }
 
 // Engine serializes observations and persistence for a single alert executor.
@@ -222,7 +225,7 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	}
 	o.CheckedAt = o.CheckedAt.UTC()
 	if p, ok := e.pending[o.EndpointID]; ok {
-		if _, err := e.commit(ctx, p.change); err != nil {
+		if _, err := e.commitPending(ctx, p); err != nil {
 			return "", err
 		}
 		e.states[o.EndpointID] = p.next
@@ -250,16 +253,36 @@ func (e *Engine) Observe(ctx context.Context, o Observation, policy Policy) (Sta
 	}
 	next, kind := advance(m, o, threshold, recoverySuccesses)
 	if kind == "" {
+		if active != nil && !o.CheckedAt.Before(m.last) {
+			_, tasks, err := PrepareReminder(*active, o)
+			if err != nil {
+				return "", err
+			}
+			if tasks != nil {
+				p := pendingTransition{reminder: &ReminderChange{IncidentID: active.ID, ExpectedCount: active.ReminderCount, CheckedAt: o.CheckedAt}, next: next}
+				e.pending[o.EndpointID] = p
+				if _, err := e.commitPending(ctx, p); err != nil {
+					return "", err
+				}
+				delete(e.pending, o.EndpointID)
+			}
+		}
 		e.states[o.EndpointID] = next
 		return next.state, nil
 	}
 	var incident Incident
 	if kind == Down {
 		incident = Incident{ID: rand.Text(), EndpointID: o.EndpointID, FirstFailureAt: next.first, ConfirmedAt: o.CheckedAt, ChannelIDs: channels}
+		if policy.ReminderPolicy != nil {
+			p := *policy.ReminderPolicy
+			incident.ReminderPolicy = &p
+			incident.NextReminderAt = o.CheckedAt.Add(p.Interval)
+		}
 		next.incidentID = incident.ID
 	} else {
 		incident = *active
 		incident.RecoveredAt = o.CheckedAt
+		incident.NextReminderAt = time.Time{}
 	}
 	change := Transition{Type: kind, Incident: incident}
 	e.pending[o.EndpointID] = pendingTransition{change: change, next: next}
@@ -315,17 +338,12 @@ func sameIncident(a, b Incident) bool {
 // their atomic conditional write boundary, before changing any persistent data.
 func prepare(existing *Incident, activeID string, change Transition) (Incident, []Task, error) {
 	i := change.Incident
-	// Schema v1 cannot represent reminder transactions. B2 must migrate before
-	// enabling snapshots or tasks; the runtime has no reminder policy wiring.
-	if i.ReminderPolicy != nil || i.ReminderCount != 0 || !i.NextReminderAt.IsZero() {
-		return Incident{}, nil, ErrInvalid
-	}
 	if err := validateIncident(i); err != nil {
 		return Incident{}, nil, err
 	}
 	switch change.Type {
 	case Down:
-		if !i.RecoveredAt.IsZero() {
+		if !i.RecoveredAt.IsZero() || i.ReminderCount != 0 {
 			return Incident{}, nil, ErrInvalid
 		}
 		if existing != nil {
@@ -348,6 +366,9 @@ func prepare(existing *Incident, activeID string, change Transition) (Incident, 
 			return *existing, nil, nil
 		}
 		if activeID != i.ID {
+			return Incident{}, nil, ErrConflict
+		}
+		if i.ReminderCount != existing.ReminderCount {
 			return Incident{}, nil, ErrConflict
 		}
 	default:
@@ -376,9 +397,6 @@ func decodeIncident(data []byte) (*Incident, error) {
 	if err := validateIncident(i); err != nil {
 		return nil, err
 	}
-	if i.ReminderPolicy != nil || i.ReminderCount != 0 || !i.NextReminderAt.IsZero() {
-		return nil, ErrInvalid
-	}
 	return &i, nil
 }
 
@@ -386,9 +404,6 @@ func decodeTask(data []byte) (Task, error) {
 	var task Task
 	if err := json.Unmarshal(data, &task); err != nil {
 		return task, ErrInvalid
-	}
-	if task.Type == Reminder || task.ReminderSequence != 0 {
-		return Task{}, ErrInvalid // Reminder records require B2's versioned persistence.
 	}
 	if err := validateTask(task); err != nil {
 		return Task{}, ErrInvalid

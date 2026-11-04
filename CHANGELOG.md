@@ -8,10 +8,13 @@ All notable changes to this project will be documented in this file.
 
 - Configurable consecutive recovery successes (1–10, default one), with volatile
   counts reset by failure, observation gaps and restart.
-- v0.2.1-B1 reminder core: deterministic per-sequence identity, pure generation,
-  dependency and recovery-cancellation rules, adapter payloads and in-flight
-  outcome reconciliation. Schema v1 rejects reminder snapshots/tasks; reminder
-  YAML, scheduling, persistence transactions and migration remain for B2.
+- Optional, durable REMINDER notifications driven only by real failed probes,
+  with frozen per-incident intervals/limits, stable sequence IDs, ordered delivery
+  and atomic recovery cancellation preserving attempt receipts.
+- Read-only indexed incident history with bounded keyset pagination. Alert bbolt
+  Schema v1 upgrades atomically to v2; Redis retains its namespace and resumes
+  bounded HSCAN index backfill before accepting runtime work. Legacy incidents
+  keep reminders disabled; monitoring Schema v1 and DOWN/RECOVERED IDs are unchanged.
 
 - Optional DOWN/RECOVERED alerts for HTTP/HTTPS endpoints, disabled by default,
   with configurable consecutive failures (1–10, default three) and recovery on
@@ -31,7 +34,8 @@ All notable changes to this project will be documented in this file.
 
 - Allow separate shutdown/drain/recording phases in Docker/systemd stop budgets
   (45 seconds with the default application timeout); application defaults stay
-  unchanged. Existing monitoring Schema v1 and alert Schema v1 remain unchanged.
+  unchanged. Monitoring Schema v1 remains unchanged; alert storage upgrades are
+  described above.
 - Validate Redis WATCH conditions before returning logical errors from interleaved
   reads; concurrent identical recoveries remain idempotent. Redis tests distinguish
   an absent empty active hash from keys that actually have expiry.
