@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Independent Generic HTTP Webhook and Feishu/Lark custom-bot text adapters,
+  with stable event payloads, optional credentials/signing, bounded HTTP requests,
+  classified single-attempt results and Retry-After hints. No runtime delivery,
+  channel configuration, persistence updates or dependencies are introduced.
+
 - Internal delivery persistence for PENDING/SENT/FAILED/SKIPPED outbox tasks,
   conditional attempt receipts and read-back reconciliation, bounded due-task
   queries, pure capped exponential backoff, and atomic DOWN/RECOVERED dependency

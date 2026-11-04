@@ -1,9 +1,10 @@
-# Alert Contract (v0.2.0-B1/B2/C1)
+# Alert Contract (v0.2.0-B1/B2/C1/C2)
 
 `internal/alerts` is an independent, observation-driven core. `internal/app`
 optionally feeds it upstream endpoint probe results. Alerts are disabled by
 default: ordinary startup creates neither an alert database nor an alert worker.
-No notification delivery, channel configuration, or management API exists.
+`internal/notify` provides independently callable HTTP adapters; the runtime has
+no channel configuration, delivery worker, or management API.
 
 ## State and observations
 
@@ -198,13 +199,72 @@ No notification delivery, channel configuration, or management API exists.
   displace records; later passes start at an empty cursor. A page is advisory,
   never a reservation, and RecordOutcome must recheck conditions.
 
+## Notification adapters (C2)
+
+- `internal/notify.Sender.Send(ctx, Message)` performs at most one HTTP attempt.
+  Message contains a persisted Task, its Incident, and an optional display name
+  (falling back to Endpoint ID). Both adapters check PENDING eligibility, frozen
+  EventID, incident/channel association, channel snapshot membership, and event
+  timestamps before I/O. DOWN occurrence equals confirmation; RECOVERED requires
+  the matching recovery time. Terminal tasks and inconsistent inputs are refused.
+  The caller still owns due-time/dependency checks and immutable input snapshots.
+- A Result contains TaskStatus, classified ErrorCode, UTC completion AttemptedAt,
+  and optional RetryAt. PENDING means retryable, SENT means an acknowledged
+  delivery, and FAILED means permanent rejection. There is no RecordOutcome call,
+  attempt ID generation, scheduling, task scan, background worker or implicit
+  adapter retry. C1 remains responsible for backoff, exhaustion and persistence.
+- Invalid configuration/message construction returns a fixed sentinel and no
+  result. A pre-expired context returns its context error without sending. An
+  in-flight parent cancellation returns `context.Canceled` and no result; timeout
+  during an attempt is PENDING/`timeout`. A fully read response remains a fact
+  even if shutdown follows. Cancellation/network failure can occur after remote
+  acceptance: stable EventID supports receiver deduplication, not exactly-once
+  delivery. Callers must not turn a zero result into success or a stored outcome.
+- Requests use standard-library HTTP, verified TLS and no redirects/cookies.
+  Default total timeout is 10s, configurable internally up to 30s; a shorter
+  injected client timeout is retained. Response bodies are read through a 64 KiB
+  limit and always closed; oversized responses fail with `rejected`. Known
+  transports with TLS verification disabled are refused. Injected custom
+  transports/clocks must be concurrency-safe; transports must honor contexts and
+  must not add redirects, retries or sensitive logging. Configuration, raw HTTP
+  errors, request/response bodies and credentials are never logged or returned.
+- Generic Webhook POSTs JSON with `schema_version: 1`, `event_id`, `incident_id`,
+  `event_type`, `endpoint_id`, `endpoint_name`, `occurred_at`, `first_failure_at`,
+  and `confirmed_at`; RECOVERED adds `recovered_at`. All times are UTC. A delayed
+  DOWN remains unchanged when its incident later recovers. Payloads are limited
+  to 64 KiB. Headers are `Content-Type: application/json`,
+  `X-LibreCosta-Event-ID`, and optional Bearer Authorization; arbitrary headers
+  are unsupported. Non-loopback destinations with a token require HTTPS;
+  localhost and literal loopback IPs allow HTTP. Userinfo/fragments are rejected.
+- Generic 2xx succeeds. HTTP 408/429/5xx yields PENDING with `timeout`,
+  `rate_limited`, or `unavailable`; network failures use `network` (timeouts use
+  `timeout`). Other HTTP statuses, TLS certificate failures and oversized
+  responses are FAILED/`rejected`. One valid Retry-After delta or HTTP date may
+  provide a future lower bound, at most 24h from completion. Invalid, duplicate,
+  past and excessively distant hints are ignored; hints never shorten C1 backoff.
+- Feishu sends only custom-bot text, including DOWN/RECOVERED, Endpoint name/ID,
+  UTC event time and Incident ID. An optional keyword is prepended. Only exact
+  `open.feishu.cn` and `open.larksuite.com` HTTPS hosts (default/443 port), with
+  `/open-apis/bot/v2/hook/<token>` and no query/fragment, are accepted. Serialized
+  JSON is limited to 20 KiB. With a Secret, each Send calculates fresh Unix-second
+  timestamp and Base64 HMAC-SHA256 of the empty message using
+  `timestamp + "\n" + secret` as the key, per the
+  [official Feishu protocol](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot).
+- Feishu requires an explicit integer `code: 0` or legacy `StatusCode: 0` in a
+  2xx response. Missing, malformed, duplicate or conflicting codes cannot succeed.
+  Code 11232 is PENDING/`rate_limited`; 19001/19021/19022/19024 are permanent
+  `rejected`. Other business errors or malformed JSON on 2xx are rejected;
+  other HTTP failures retain HTTP classification unless a known business code
+  applies. Redirects are always rejected, and HTTP failures cannot be rescued by
+  a success body. No SDK, OAuth or application-bot behavior is implemented.
+
 ## Boundary and verification
 
 One alert executor is supported. The engine serializes its calls; both stores
 protect concurrent conditional operations, but this is not leader election,
 leases, voting, a probe scheduler, or a delivery guarantee. Shared Redis writers
-must be coordinated externally. Channel configuration, real delivery, retry
-scheduling, routing, and retention scheduling remain outside C1.
+must be coordinated externally. Channel configuration, runtime delivery, retry
+scheduling, routing, and retention scheduling remain outside C2.
 
 `make check` covers deterministic state and real temporary bbolt tests. `make race`
 includes the alert package and runtime adapter. Runtime tests include real local
@@ -216,3 +276,9 @@ use `UPTIME_TEST_REDIS_URL` and unique
 owned prefixes, skip explicitly without that variable, and delete only their
 known keys. The existing Redis integration CI job runs them alongside app tests.
 Report skipped Redis checks separately from actual integration passes.
+
+C2 tests use fixed clocks, local HTTP/TLS servers and injected RoundTrippers,
+never real external notification services. They cover payloads, stable identity,
+an independent signing vector, result classification, Retry-After, cancellation,
+TLS validation, size limits, resource closure and safe errors. Test the new
+package with the race detector when changing its shared client behavior.
