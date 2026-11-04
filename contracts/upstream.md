@@ -1,13 +1,56 @@
 # Upstream Contract
 
-P6-A uses Fiber v3.6.1, Fiber Storage Redis v3.6.2, go-redis v9.23.0,
-bbolt v1.5.0, stable `go.yaml.in/yaml/v3` v3.0.5, x/crypto v0.58.0 (bcrypt)
+B2 uses Fiber v3.6.1, Fiber Storage Redis v3.6.2, go-redis v9.23.0,
+bbolt v1.5.0, stable `go.yaml.in/yaml/v3` v3.0.6, x/crypto v0.58.0 (bcrypt)
 and x/text v0.43.0 (username NFC). `go.mod` is authoritative. No CLI/config
 framework is used.
 
+## B2 probe-result integration
+
+Fiber Uptime is pinned to merged [PR #2604](https://github.com/gofiber/contrib/pull/2604)
+commit `2800b7917d0e3f1b9932718ff6a62277d3b8742d`. `go get` resolved it to
+`v0.3.2-0.20261103161210-2800b7917d0e`; v0.3.1 does not include the hook.
+There is no fork, replace directive, or floating main dependency.
+
+Compared downloaded module sources against the P6-A pin: the runtime diff only
+adds endpoint ID capture and the optional synchronous probe-result hook. Public
+Store, Redis implementation, standalone factory, dashboard/API and shutdown
+implementation are unchanged. Calls are ordered within each endpoint and may be
+concurrent across endpoints. The runtime context, not the probe timeout context,
+is passed to the callback. Completed responses survive a later cancellation;
+shutdown-interrupted attempts without a response are suppressed. Process-only
+heartbeats do not report endpoint observations. The product adapter does not
+depend on when the initial worker is scheduled relative to constructor return.
+
+The hook is nil when alerts are disabled. When enabled, it only attempts bounded
+enqueue; the existing Engine runs in one independent worker. Resource ownership,
+health, TLS and BasicAuth remain product-owned as before. See [alerts](alerts.md).
+
+Only upstream minimum-version requirements changed the selected module graph:
+
+| Module | Before | After |
+| --- | --- | --- |
+| `github.com/gofiber/contrib/v3/uptime` | v0.2.4-0.20261017105741-e811012f8226 | v0.3.2-0.20261103161210-2800b7917d0e |
+| `go.yaml.in/yaml/v3` | v3.0.5 | v3.0.6 |
+| `github.com/gofiber/schema` | v1.8.8 | v1.9.2 |
+| `github.com/gofiber/utils/v2` | v2.6.2 | v2.6.4 |
+| `github.com/molecule-man/go-brrr` | v1.3.0 | v1.3.1 |
+| `github.com/philhofer/fwd` | v1.2.0 | v1.2.1 |
+| `github.com/valyala/fasthttp` | v1.75.0 | v1.77.0 |
+| `golang.org/x/net` | v0.61.0 | v0.62.0 |
+
+`go mod tidy` also updates checksums from upstream's test dependency graph:
+go-winio v0.6.3 -> v0.6.4, purego v0.11.1 -> v0.11.2, cbor/v2 v2.9.6 ->
+v2.10.0, moby/sys/user v0.4.1 -> v0.5.0, msgpack/v3 v3.2.3 -> v3.2.6,
+and gopsutil/v4 v4.26.9 -> v4.26.10. No new application/test imports or test
+frameworks are introduced. Fiber, Fiber Storage Redis, go-redis, bbolt, x/crypto,
+x/text, the Go minimum and recommended toolchain remain unchanged. Existing
+configuration, schema, HTTP/TLS/auth, history and shutdown suites exercise these
+compatibility boundaries; Redis integration remains explicitly opt-in.
+
 ## P6-A upstream integration
 
-Fiber Uptime is pinned to merged [PR #2535](https://github.com/gofiber/contrib/pull/2535)
+P6-A pinned Fiber Uptime to merged [PR #2535](https://github.com/gofiber/contrib/pull/2535)
 commit `e811012f822675810017efdf00823849f97f2323`, resolved by Go to
 `v0.2.4-0.20261017105741-e811012f8226`. This is a temporary commit pin until a
 released module version includes the API; there is no fork, floating main or replace.

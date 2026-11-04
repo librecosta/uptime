@@ -43,6 +43,26 @@ uptime:
   # Timezone for calendar-day boundaries in history (UTC or an IANA name).
   timezone: UTC
 
+alerts:
+  # Optional incident tracking and notifications; channel variables are ignored
+  # while disabled. Use only one alert executor per database/Redis prefix.
+  enabled: false
+  consecutive_failures: 3 # 1 through 10; one success resolves an incident.
+  channels: []
+  # Replace [] with channels as needed; keep IDs stable for incident snapshots.
+  # channels:
+  #   - id: operations
+  #     type: webhook
+  #     webhook:
+  #       url: "${UPTIME_WEBHOOK_URL}"
+  #       bearer_token: "${UPTIME_WEBHOOK_TOKEN}" # Optional; remove if unused.
+  #   - id: team
+  #     type: feishu
+  #     feishu:
+  #       url: "${UPTIME_FEISHU_URL}"
+  #       secret: "${UPTIME_FEISHU_SECRET}" # Optional; remove if unsigned.
+  #       keyword: LibreCosta # Optional keyword required by your bot policy.
+
 ui:
   path: /uptime
   title: Service Status
@@ -64,6 +84,8 @@ endpoints:
     method: GET
     interval: 30s
     timeout: 5s
+    # Omitted: notify all channels. []: track incidents without notifications.
+    # alert_channels: [operations]
     # An empty/omitted expected_status_codes list accepts 2xx/3xx.
     expected_status_codes: []
     # Only enable this header when UPTIME_API_TOKEN is set:

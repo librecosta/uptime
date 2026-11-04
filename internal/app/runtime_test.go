@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/gofiber/contrib/v3/uptime"
 	uptimestorage "github.com/gofiber/contrib/v3/uptime/storage"
+	"github.com/librecosta/uptime/internal/alerts"
 	"github.com/librecosta/uptime/internal/config"
 	"github.com/librecosta/uptime/storage/bbolt"
 )
@@ -190,6 +193,12 @@ func TestEndpointIntegration(t *testing.T) {
 			}
 			r.cancel()
 			must(t, r.wait(t))
+			if s.alerts != nil {
+				t.Fatal("disabled alerts started a worker")
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Storage.Bbolt.Path), "alerts.db")); !os.IsNotExist(err) {
+				t.Fatal("disabled alerts created storage")
+			}
 			if s.ready.Load() {
 				t.Fatal("ready after shutdown")
 			}
@@ -410,4 +419,519 @@ func TestCancellationBetweenOnListenAndServe(t *testing.T) {
 		t.Fatal("ready after cancellation")
 	}
 	reopen(t, cfg.Storage.Bbolt.Path)
+}
+
+type testAlertStore struct {
+	alerts.Store
+	active func(context.Context, string) (*alerts.Incident, error)
+	apply  func(context.Context, alerts.Transition) (alerts.Incident, error)
+}
+
+func (s *testAlertStore) GetTask(ctx context.Context, id string) (*alerts.Task, error) {
+	return s.Store.(alerts.DeliveryStore).GetTask(ctx, id)
+}
+func (s *testAlertStore) QueryDue(ctx context.Context, q alerts.DueQuery) (alerts.TaskPage, error) {
+	return s.Store.(alerts.DeliveryStore).QueryDue(ctx, q)
+}
+func (s *testAlertStore) RecordOutcome(ctx context.Context, o alerts.Outcome) (alerts.Task, error) {
+	return s.Store.(alerts.DeliveryStore).RecordOutcome(ctx, o)
+}
+
+func (s *testAlertStore) Active(ctx context.Context, id string) (*alerts.Incident, error) {
+	if s.active != nil {
+		return s.active(ctx, id)
+	}
+	return s.Store.Active(ctx, id)
+}
+
+func (s *testAlertStore) Apply(ctx context.Context, change alerts.Transition) (alerts.Incident, error) {
+	if s.apply != nil {
+		return s.apply(ctx, change)
+	}
+	return s.Store.Apply(ctx, change)
+}
+
+func testAlertBbolt(t *testing.T) *alerts.BboltStore {
+	t.Helper()
+	s, err := alerts.OpenBbolt(filepath.Join(t.TempDir(), "alerts.db"), time.Second)
+	must(t, err)
+	t.Cleanup(func() { must(t, s.Close()) })
+	return s
+}
+
+// A barrier endpoint is read after all earlier queued events have been handled.
+// Tests can then change injected failures without relying on sleeps or queue size.
+func startAlertWorker(t *testing.T, store alerts.Store, capacity int, ids ...string) (*alertRuntime, func()) {
+	t.Helper()
+	barrier := make(chan struct{}, 1)
+	wrapper := &testAlertStore{Store: store, active: func(ctx context.Context, id string) (*alerts.Incident, error) {
+		if id == "barrier" {
+			barrier <- struct{}{}
+			return nil, nil
+		}
+		return store.Active(ctx, id)
+	}}
+	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}, Alerts: config.AlertsConfig{Enabled: true, ConsecutiveFailures: 3}}
+	for _, id := range append(ids, "barrier") {
+		cfg.Endpoints = append(cfg.Endpoints, config.EndpointConfig{ID: id})
+	}
+	r, err := newAlertRuntime(wrapper, func() error { return nil }, cfg, capacity)
+	must(t, err)
+	t.Cleanup(func() { must(t, r.stop(time.Second)) })
+	wait := func() {
+		t.Helper()
+		// Blocking is confined to the test barrier, never the production hook.
+		event := alertEvent{sequence: r.endpoints["barrier"].sequence.Add(1), observation: alerts.Observation{EndpointID: "barrier", CheckedAt: time.Now(), Success: true}}
+		select {
+		case r.queue <- event:
+		case <-time.After(testDeadline):
+			t.Fatal("alert worker did not accept barrier")
+		}
+		select {
+		case <-barrier:
+		case <-time.After(testDeadline):
+			t.Fatal("alert worker did not reach barrier")
+		}
+	}
+	return r, wait
+}
+
+func alertProbe(id string, n int, success bool) uptime.ProbeResult {
+	return uptime.ProbeResult{EndpointID: id, CheckedAt: time.Date(2026, 11, 1, 0, 0, n, 0, time.UTC), Success: success, StatusCode: 500}
+}
+
+func TestAlertWorkerSequenceAndRestart(t *testing.T) {
+	store := testAlertBbolt(t)
+	r, wait := startAlertWorker(t, store, 64, "pending", "firing")
+	for n := 1; n <= 2; n++ {
+		r.hook(context.Background(), alertProbe("pending", n, false))
+	}
+	for n := 1; n <= 4; n++ {
+		r.hook(context.Background(), alertProbe("firing", n, false))
+	}
+	wait()
+	active, err := store.Active(context.Background(), "firing")
+	must(t, err)
+	if active == nil || !active.FirstFailureAt.Equal(alertProbe("firing", 1, false).CheckedAt) || !active.ConfirmedAt.Equal(alertProbe("firing", 3, false).CheckedAt) || len(active.ChannelIDs) != 0 {
+		t.Fatal("missing, duplicate, or wrongly timed incident")
+	}
+	must(t, r.stop(time.Second))
+	r2, wait2 := startAlertWorker(t, store, 64, "pending", "firing")
+	r2.hook(context.Background(), alertProbe("pending", 3, false))
+	r2.hook(context.Background(), alertProbe("firing", 5, false))
+	wait2()
+	pending, err := store.Active(context.Background(), "pending")
+	must(t, err)
+	still, err := store.Active(context.Background(), "firing")
+	must(t, err)
+	if pending != nil || still == nil || still.ID != active.ID {
+		t.Fatal("restart did not reset PENDING or preserve FIRING")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // A completed result entering the hook survives probe cancellation.
+	r2.hook(ctx, alertProbe("firing", 6, true))
+	must(t, r2.stop(time.Second))
+	closed, err := store.Get(context.Background(), active.ID)
+	must(t, err)
+	if closed.RecoveredAt != alertProbe("firing", 6, true).CheckedAt {
+		t.Fatal("drain lost completed recovery")
+	}
+	tasks, err := store.Outbox(context.Background())
+	must(t, err)
+	if len(tasks) != 0 {
+		t.Fatal("runtime invented notification channels")
+	}
+}
+
+func TestAlertIngressOverflowAndStorageFailure(t *testing.T) {
+	for _, mode := range []string{"overflow", "read failure", "write failure", "uncertain commit"} {
+		t.Run(mode, func(t *testing.T) {
+			store := testAlertBbolt(t)
+			var fail atomic.Bool
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			injected := errors.New("Redis URL and HEADER SECRET")
+			wrapper := &testAlertStore{Store: store}
+			wrapper.active = func(ctx context.Context, id string) (*alerts.Incident, error) {
+				if mode == "overflow" {
+					once.Do(func() {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					})
+				}
+				if fail.Load() && mode == "read failure" {
+					return nil, injected
+				}
+				return store.Active(ctx, id)
+			}
+			wrapper.apply = func(ctx context.Context, change alerts.Transition) (alerts.Incident, error) {
+				if fail.Load() && mode == "write failure" {
+					return alerts.Incident{}, injected
+				}
+				result, err := store.Apply(ctx, change)
+				if fail.Load() && mode == "uncertain commit" && err == nil {
+					return alerts.Incident{}, injected
+				}
+				return result, err
+			}
+			capacity := 16
+			if mode == "overflow" {
+				capacity = 1
+			}
+			r, wait := startAlertWorker(t, wrapper, capacity, "target")
+			r.hook(context.Background(), alertProbe("target", 1, false))
+			if mode == "overflow" {
+				select {
+				case <-entered:
+				case <-time.After(testDeadline):
+					t.Fatal("alert worker did not enter storage")
+				}
+				r.hook(context.Background(), alertProbe("target", 2, false))
+				r.hook(context.Background(), alertProbe("target", 3, true)) // Lost success must break the sequence.
+				lost := r.dropped.Load()
+				close(release)
+				if lost != 1 {
+					t.Fatal("overflow was not counted")
+				}
+				wait()
+			} else {
+				r.hook(context.Background(), alertProbe("target", 2, false))
+				wait()
+				fail.Store(true)
+				r.hook(context.Background(), alertProbe("target", 3, false))
+				wait()
+				fail.Store(false)
+			}
+			for n := 4; n <= 6; n++ {
+				r.hook(context.Background(), alertProbe("target", n, false))
+				wait()
+				active, err := store.Active(context.Background(), "target")
+				must(t, err)
+				// Failed/uncertain writes retain B1's original transition for
+				// reconciliation; read/loss gaps instead reset unconfirmed counts.
+				if mode == "overflow" || mode == "read failure" {
+					if (active == nil) != (n < 6) {
+						t.Fatal("pending failures crossed a gap")
+					}
+				} else if active == nil || !active.ConfirmedAt.Equal(alertProbe("target", 3, false).CheckedAt) {
+					t.Fatal("original transition was lost during reconciliation")
+				}
+			}
+			r.hook(context.Background(), alertProbe("target", 7, true))
+			wait()
+			active, err := store.Active(context.Background(), "target")
+			must(t, err)
+			if active != nil {
+				t.Fatal("real recovery was not consumed")
+			}
+		})
+	}
+}
+
+func TestAlertConcurrentEndpoints(t *testing.T) {
+	store := testAlertBbolt(t)
+	ids := []string{"one", "two", "three", "four"}
+	r, _ := startAlertWorker(t, store, 256, ids...)
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Go(func() {
+			for n := 1; n <= 10; n++ {
+				// Each group creates then recovers one incident. The final group
+				// remains FIRING, exposing reordering of success/failure callbacks.
+				r.hook(context.Background(), alertProbe(id, n, n == 4 || n == 8))
+			}
+			r.hook(context.Background(), alertProbe(id, 11, false))
+		})
+	}
+	wg.Wait()
+	must(t, r.stop(time.Second))
+	for _, id := range ids {
+		active, err := store.Active(context.Background(), id)
+		must(t, err)
+		if active == nil || !active.FirstFailureAt.Equal(alertProbe(id, 9, false).CheckedAt) || !active.ConfirmedAt.Equal(alertProbe(id, 11, false).CheckedAt) {
+			t.Fatal("endpoint callback order changed")
+		}
+	}
+}
+
+func TestAlertRuntimeEndpointIntegration(t *testing.T) {
+	var success atomic.Bool
+	var probes atomic.Int32
+	var first, second atomic.Pointer[time.Time]
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		now := time.Now()
+		switch probes.Add(1) {
+		case 1:
+			first.Store(&now)
+		case 2:
+			second.Store(&now)
+		}
+		if !success.Load() {
+			w.WriteHeader(500)
+		}
+	}))
+	defer target.Close()
+	cfg := testConfig(t, target.URL)
+	cfg.Alerts.Enabled = true
+	s, err := New(cfg)
+	must(t, err)
+	r := startServer(t, s)
+	var incident *alerts.Incident
+	poll(t, func() bool {
+		incident, err = s.alerts.store.Active(context.Background(), "target")
+		must(t, err)
+		return incident != nil && probes.Load() >= 4
+	})
+	if first.Load() == nil || second.Load() == nil || incident.FirstFailureAt.Before(*first.Load()) || !incident.FirstFailureAt.Before(*second.Load()) {
+		t.Fatal("first probe was lost during startup")
+	}
+	id := incident.ID
+	success.Store(true)
+	poll(t, func() bool {
+		closed, err := s.alerts.store.Get(context.Background(), id)
+		must(t, err)
+		return closed != nil && !closed.RecoveredAt.IsZero()
+	})
+	r.health(t, "/readyz", 200, "ready\n")
+	r.cancel()
+	must(t, r.wait(t))
+	// Late callbacks cannot reach the already-closed store or panic on send.
+	s.alerts.hook(context.Background(), alertProbe("target", 20, false))
+	path := filepath.Join(filepath.Dir(cfg.Storage.Bbolt.Path), "alerts.db")
+	reopened, err := alerts.OpenBbolt(path, time.Second)
+	must(t, err)
+	defer reopened.Close()
+	closed, err := reopened.Get(context.Background(), id)
+	must(t, err)
+	if closed == nil || closed.RecoveredAt.IsZero() {
+		t.Fatal("recovery was not persisted before close")
+	}
+}
+
+func TestAlertStartupFailureCleanup(t *testing.T) {
+	for _, mode := range []string{"foreign file", "path collision", "initialization", "constructor"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := testConfig(t, "http://never-resolves.invalid/")
+			cfg.Alerts.Enabled = true
+			if mode == "path collision" {
+				cfg.Storage.Bbolt.Path = filepath.Join(filepath.Dir(cfg.Storage.Bbolt.Path), "alerts.db")
+			}
+			if mode == "foreign file" {
+				must(t, os.MkdirAll(filepath.Dir(cfg.Storage.Bbolt.Path), 0750))
+				must(t, os.WriteFile(filepath.Join(filepath.Dir(cfg.Storage.Bbolt.Path), "alerts.db"), []byte("unrelated SECRET data"), 0600))
+			}
+			if mode == "constructor" {
+				cfg.Endpoints[0].Timeout = time.Nanosecond
+			}
+			s, err := New(cfg)
+			must(t, err)
+			s.deps.listen = func(network, _ string) (net.Listener, error) { return net.Listen(network, "127.0.0.1:0") }
+			if mode == "initialization" {
+				s.deps.openAlerts = func(context.Context, *runtimeStorage, config.Config) (alerts.Store, func() error, error) {
+					return nil, nil, errors.New("SECRET endpoint header or Redis URL")
+				}
+			}
+			err = s.Run(context.Background())
+			if err == nil || strings.Contains(err.Error(), "SECRET") || s.ready.Load() {
+				t.Fatalf("unsafe or missing startup failure: %v", err)
+			}
+			if s.alerts != nil {
+				select {
+				case <-s.alerts.done:
+				default:
+					t.Fatal("constructor failure leaked worker")
+				}
+			}
+			reopen(t, cfg.Storage.Bbolt.Path)
+		})
+	}
+}
+
+func TestAlertDrainDeadlineAndCloseOrder(t *testing.T) {
+	store := testAlertBbolt(t)
+	entered := make(chan struct{})
+	var exited, closed atomic.Bool
+	wrapper := &testAlertStore{Store: store, active: func(ctx context.Context, id string) (*alerts.Incident, error) {
+		close(entered)
+		<-ctx.Done()
+		exited.Store(true)
+		return nil, ctx.Err()
+	}}
+	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Second}, Endpoints: []config.EndpointConfig{{ID: "target"}}}
+	closeErr := errors.New("close SECRET")
+	r, err := newAlertRuntime(wrapper, func() error {
+		if !exited.Load() {
+			t.Error("closed before worker left storage")
+		}
+		closed.Store(true)
+		return closeErr
+	}, cfg, 1)
+	must(t, err)
+	r.hook(context.Background(), alertProbe("target", 1, false))
+	select {
+	case <-entered:
+	case <-time.After(testDeadline):
+		t.Fatal("alert worker did not enter storage")
+	}
+	err = r.stop(20 * time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, closeErr) || strings.Contains(err.Error(), "SECRET") || !closed.Load() {
+		t.Fatalf("drain/close failures not preserved safely: %v", err)
+	}
+	r.hook(context.Background(), alertProbe("target", 2, true))
+}
+
+func TestAlertFiringSurvivesStorageOutage(t *testing.T) {
+	store := testAlertBbolt(t)
+	var fail atomic.Bool
+	wrapper := &testAlertStore{Store: store, active: func(ctx context.Context, id string) (*alerts.Incident, error) {
+		if fail.Load() {
+			return nil, errors.New("SECRET")
+		}
+		return store.Active(ctx, id)
+	}}
+	r, wait := startAlertWorker(t, wrapper, 16, "target")
+	for n := 1; n <= 3; n++ {
+		r.hook(context.Background(), alertProbe("target", n, false))
+	}
+	wait()
+	initial, err := store.Active(context.Background(), "target")
+	must(t, err)
+	if initial == nil {
+		t.Fatal("missing confirmed incident")
+	}
+	fail.Store(true)
+	r.hook(context.Background(), alertProbe("target", 4, true))
+	wait()
+	fail.Store(false)
+	r.hook(context.Background(), alertProbe("target", 5, false))
+	wait()
+	active, err := store.Active(context.Background(), "target")
+	must(t, err)
+	if active == nil || active.ID != initial.ID {
+		t.Fatal("outage or gap fabricated recovery")
+	}
+	r.hook(context.Background(), alertProbe("target", 6, true))
+	wait()
+	closed, err := store.Get(context.Background(), initial.ID)
+	must(t, err)
+	if closed.RecoveredAt != alertProbe("target", 6, true).CheckedAt {
+		t.Fatal("recovery did not require a consumed real success")
+	}
+}
+
+func TestAlertShutdownDrainsAcceptedProbe(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	defer target.Close()
+	cfg := testConfig(t, target.URL)
+	cfg.Alerts = config.AlertsConfig{Enabled: true, ConsecutiveFailures: 1}
+	s, err := New(cfg)
+	must(t, err)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var storeClosed atomic.Bool
+	s.deps.openAlerts = func(ctx context.Context, resources *runtimeStorage, cfg config.Config) (alerts.Store, func() error, error) {
+		store, closeStore, err := openAlertStore(ctx, resources, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		wrapper := &testAlertStore{Store: store, active: func(ctx context.Context, id string) (*alerts.Incident, error) {
+			once.Do(func() {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			})
+			if storeClosed.Load() || ctx.Err() != nil {
+				t.Error("accepted probe used a closed store or canceled probe context")
+			}
+			return store.Active(ctx, id)
+		}}
+		return wrapper, func() error { storeClosed.Store(true); return closeStore() }, nil
+	}
+	r := startServer(t, s)
+	select {
+	case <-entered:
+	case <-time.After(testDeadline):
+		close(release)
+		t.Fatal("initial probe did not enter worker")
+	}
+	r.cancel()
+	poll(t, func() bool { return !s.ready.Load() })
+	close(release)
+	must(t, r.wait(t))
+	if !storeClosed.Load() {
+		t.Fatal("alert store left open")
+	}
+	reopened, err := alerts.OpenBbolt(filepath.Join(filepath.Dir(cfg.Storage.Bbolt.Path), "alerts.db"), time.Second)
+	must(t, err)
+	defer reopened.Close()
+	incident, err := reopened.Active(context.Background(), "target")
+	must(t, err)
+	if incident == nil {
+		t.Fatal("shutdown lost a completed, accepted probe")
+	}
+}
+
+func TestAlertStorageDeadlines(t *testing.T) {
+	store := testAlertBbolt(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	deadline := make(chan time.Time, 1)
+	var calls atomic.Int32
+	wrapper := &testAlertStore{Store: store, active: func(ctx context.Context, id string) (*alerts.Incident, error) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("storage operation has no deadline")
+		}
+		if calls.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		} else {
+			deadline <- d
+		}
+		return store.Active(ctx, id)
+	}}
+	// An exaggerated normal budget makes it unambiguous that queued work
+	// inherits the independent drain deadline, rather than another full budget.
+	cfg := config.Config{Server: config.ServerConfig{ShutdownTimeout: time.Hour}, Endpoints: []config.EndpointConfig{{ID: "target"}}}
+	r, err := newAlertRuntime(wrapper, func() error { return nil }, cfg, 2)
+	must(t, err)
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); _ = r.stop(time.Second) })
+	r.hook(context.Background(), alertProbe("target", 1, false))
+	r.hook(context.Background(), alertProbe("target", 2, false))
+	select {
+	case <-entered:
+	case <-time.After(testDeadline):
+		t.Fatal("worker did not start observation")
+	}
+	stopped := make(chan error, 1)
+	stopAt := time.Now()
+	go func() { stopped <- r.stop(time.Second) }()
+	poll(t, func() bool {
+		r.gate.RLock()
+		defer r.gate.RUnlock()
+		return !r.accepting
+	})
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-stopped:
+		must(t, err)
+	case <-time.After(testDeadline):
+		t.Fatal("worker did not drain")
+	}
+	select {
+	case d := <-deadline:
+		if d.IsZero() || d.After(stopAt.Add(2*time.Second)) {
+			t.Fatal("draining did not inherit its own deadline")
+		}
+	default:
+		t.Fatal("accepted second observation was not drained")
+	}
 }

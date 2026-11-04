@@ -28,6 +28,11 @@ type rawConfig struct {
 		Window    *string `yaml:"window"`
 		Timezone  *string `yaml:"timezone"`
 	} `yaml:"uptime"`
+	Alerts struct {
+		Enabled             bool              `yaml:"enabled"`
+		ConsecutiveFailures *int              `yaml:"consecutive_failures"`
+		Channels            []rawAlertChannel `yaml:"channels"`
+	} `yaml:"alerts"`
 	UI struct {
 		Path        *string `yaml:"path"`
 		Title       *string `yaml:"title"`
@@ -50,6 +55,7 @@ type rawConfig struct {
 }
 
 type rawEndpoint struct {
+	AlertChannels       []string          `yaml:"alert_channels"`
 	ID                  string            `yaml:"id"`
 	Name                *string           `yaml:"name"`
 	Description         *string           `yaml:"description"`
@@ -59,6 +65,20 @@ type rawEndpoint struct {
 	Timeout             *string           `yaml:"timeout"`
 	Headers             map[string]string `yaml:"headers"`
 	ExpectedStatusCodes []int             `yaml:"expected_status_codes"`
+}
+
+type rawAlertChannel struct {
+	ID      string `yaml:"id"`
+	Type    string `yaml:"type"`
+	Webhook struct {
+		URL         *string `yaml:"url"`
+		BearerToken *string `yaml:"bearer_token"`
+	} `yaml:"webhook"`
+	Feishu struct {
+		URL     *string `yaml:"url"`
+		Secret  *string `yaml:"secret"`
+		Keyword *string `yaml:"keyword"`
+	} `yaml:"feishu"`
 }
 
 func defaultTo[T any](field **T, value T) {
@@ -77,6 +97,7 @@ func (r *rawConfig) defaults() {
 	defaultTo(&r.Uptime.Retention, "90d")
 	defaultTo(&r.Uptime.Window, "30d")
 	defaultTo(&r.Uptime.Timezone, "UTC")
+	defaultTo(&r.Alerts.ConsecutiveFailures, 3)
 	defaultTo(&r.UI.Path, "/uptime")
 	defaultTo(&r.UI.Title, "Service Status")
 	defaultTo(&r.UI.Description, "Current service availability.")

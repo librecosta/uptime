@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Optional DOWN/RECOVERED alerts for HTTP/HTTPS endpoints, disabled by default,
+  with configurable consecutive failures (1–10, default three) and recovery on
+  a successful probe. Bounded ingress detects gaps without inventing failures.
+- Generic HTTP Webhook and Feishu/Lark custom-bot text notifications, optional
+  credentials/signing, stable channel IDs and per-endpoint routing.
+- Durable incidents and PENDING/SENT/FAILED/SKIPPED outbox tasks in independent
+  bbolt/Redis alert storage. One delivery worker handles ordered recovery,
+  capped exponential backoff (at most ten attempts), Retry-After, per-bot limits,
+  restart recovery and uncertain-result reconciliation. At-least-once delivery
+  can repeat messages; one alert executor is required per database/Redis prefix.
+- Prepared [v0.2.0 release notes](docs/releases/v0.2.0.md), paired monitoring/alert
+  database backup and restore examples, and a Docker smoke check for both files'
+  non-root ownership, private permissions and persistence.
+
+### Changed
+
+- Allow separate shutdown/drain/recording phases in Docker/systemd stop budgets
+  (45 seconds with the default application timeout); application defaults stay
+  unchanged. Existing monitoring Schema v1 and alert Schema v1 remain unchanged.
+- Validate Redis WATCH conditions before returning logical errors from interleaved
+  reads; concurrent identical recoveries remain idempotent. Redis tests distinguish
+  an absent empty active hash from keys that actually have expiry.
+
+- Pin Fiber Uptime to PR #2604's merged commit
+  `2800b7917d0e3f1b9932718ff6a62277d3b8742d` for its optional probe-result hook,
+  with only required module-graph upgrades; see `contracts/upstream.md`.
+
 ## [v0.1.1]
 
 ### Security

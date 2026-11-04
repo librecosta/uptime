@@ -39,11 +39,13 @@ func testConfig(t *testing.T, target string) config.Config {
 }
 
 func TestNewHasNoIO(t *testing.T) {
-	for _, capability := range []string{"supported", "redis", "tls", "auth", "redis-tls-auth"} {
+	for _, capability := range []string{"supported", "redis", "tls", "auth", "redis-tls-auth", "alerts"} {
 		t.Run(capability, func(t *testing.T) {
 			cfg := testConfig(t, "http://never-resolves.invalid/")
 			path := cfg.Storage.Bbolt.Path
 			switch capability {
+			case "alerts":
+				cfg.Alerts.Enabled = true
 			case "redis", "redis-tls-auth":
 				cfg.Storage.Type = config.StorageRedis
 				cfg.Storage.Bbolt = nil
