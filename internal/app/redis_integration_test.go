@@ -537,3 +537,17 @@ func TestRedisIntegrationStartupFailure(t *testing.T) {
 	}
 	assertRedisClosed(t, s.store)
 }
+
+func TestRedisIntegrationAlertHistoryHTTP(t *testing.T) {
+	value := redisIntegrationURL(t)
+	prefix := redisIntegrationPrefix(t, value)
+	options, err := redis.ParseURL(value)
+	must(t, err)
+	options.ContextTimeoutEnabled = true
+	client := redis.NewClient(options)
+	defer client.Close()
+	store, err := alerts.NewRedisStore(client, prefix)
+	must(t, err)
+	must(t, store.Check(t.Context()))
+	exerciseHistoryHTTP(t, store)
+}

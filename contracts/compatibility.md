@@ -153,6 +153,7 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `uptime.retention`, `uptime.window` | `90d`, `30d` |
 | `uptime.timezone` | `UTC` |
 | `alerts.enabled`, `alerts.consecutive_failures`, `alerts.recovery_successes` | `false`, `3`, `1` |
+| `alerts.history_enabled` | `false` (requires enabled alerts and valid enabled Basic Auth) |
 | `alerts.reminder_interval`, `alerts.reminder_limit` | `0s`, `0` (disabled) |
 | `alerts.channels`, endpoint `alert_channels` | no channels; all defined channels when alerts are enabled |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
@@ -338,7 +339,8 @@ Fiber official BasicAuth protects exactly `ui.path` and paths starting with
 that namespace. `auth.protect_uptime: false` publishes both the Uptime page and
 its `<ui.path>/api/status` API. Enabled `/monitor` and its slash descendants always
 require authentication, independently of that setting. The reserved `/alerts`
-namespace is protected when auth is enabled, but has no page or API in this phase.
+namespace is protected when auth is enabled; its read-only page/API is registered
+only with `alerts.history_enabled`. See the [history contract](alerts.md#read-only-alert-history-v021-c).
 Guards use the same Fiber-normalized path as the upstream handlers; escaped aliases
 cannot expose a protected handler. Similar prefixes are not namespace matches.
 Health always remains public. Missing/wrong credentials receive Fiber's 401 Basic

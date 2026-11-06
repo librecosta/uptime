@@ -125,9 +125,8 @@ It requires enabled Basic Auth with valid credentials; use HTTPS for remote acce
 
 `auth.protect_uptime` defaults to `true`. Setting it to `false` publishes both the
 Uptime dashboard and `<ui.path>/api/status`, while Monitor remains authenticated.
-The `/alerts` namespace is reserved; no history page is implemented. Monitor is
-off by default, with no middleware or ongoing collection; its system dependency
-still performs one-time initialization. These options are on `develop`, outside
+Monitor is off by default, with no middleware or ongoing collection; its system
+dependency still performs one-time initialization. These options are on `develop`, outside
 the v0.1.0 downloads above.
 
 ## Alerts (v0.2.0 development)
@@ -151,8 +150,15 @@ delivery is not guaranteed. Webhook receivers should deduplicate by EventID. Rem
 channel leaves its pending tasks waiting; keep its ID/configuration available for
 historical incidents. See the [alert contract](https://github.com/librecosta/uptime/blob/develop/contracts/alerts.md)
 for retry, security and ownership constraints.
-There is no separate alert management UI, and this process cannot notify you
-after it has stopped completely; use an independent external health check.
+
+Enable `alerts.history_enabled` with both alerts and Basic Auth enabled to browse
+read-only incident history at `/alerts`. Expand an incident for paginated channel
+delivery details, including reminders, retries and cancellation. Times are UTC;
+retired endpoints use their saved ID. The history page stays private even with
+`auth.protect_uptime: false`; it provides no editing or resend actions.
+
+This process cannot notify you after it has stopped completely; use an independent
+external health check.
 The candidate [Docker](https://github.com/librecosta/uptime/blob/develop/docs/deployment/docker.md#stop-maintain-back-up-and-upgrade)
 and [systemd](https://github.com/librecosta/uptime/blob/develop/docs/deployment/systemd.md#stop-back-up-maintain-and-upgrade)
 guides cover paired database backup and restore. See the prepared

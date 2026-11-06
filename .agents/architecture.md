@@ -84,12 +84,15 @@ upstream API in a new abstraction.
   never rereads files or downgrades to HTTP. Keep the tracked transport inside TLS
   so timeout force-close can unblock a stalled handshake before storage closes.
 - Middleware order is optional Monitor auth guard -> global Monitor -> Recover ->
-  public health -> GET/HEAD root redirect -> optional Fiber BasicAuth -> Uptime ->
-  default 404. Monitor uses Next to instrument other requests, including recovered
+  public health -> GET/HEAD root redirect -> optional Fiber BasicAuth ->
+  optional read-only alert history -> Uptime -> default 404. Monitor uses Next to instrument other requests, including recovered
   5xx responses; its own namespace terminates before instrumentation. Reuse one
   BasicAuth handler, constructed before Uptime with a narrow safe panic boundary.
   Its fixed realm is LibreCosta Uptime. Protect the UI namespace unless explicitly
   published, plus enabled Monitor and reserved `/alerts`. No custom credential parser.
+- Alert history borrows the runtime alert store, with bounded indexed lists and
+  transactional derived-task pages. Auth precedes all history handlers; HTTP
+  drains before alert store closure. No extra resource owner or worker is added.
 - Monitor is constructed only when enabled and requires valid enabled Basic Auth.
   Keep its native HTML/JSON, 3s refresh/cache and disabled exact GC pause metrics.
   Disabled Monitor starts no collection; its imported system dependency still

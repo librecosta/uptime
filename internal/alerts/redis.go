@@ -520,6 +520,30 @@ func (s *RedisStore) ListIncidents(ctx context.Context, q HistoryQuery) (page In
 	return
 }
 
+// ReadIncident validates its watched read set with EXEC, retrying concurrent
+// incident/outcome changes. It never initializes schema or scans the task hash.
+func (s *RedisStore) ReadIncident(ctx context.Context, q DetailQuery) (page IncidentDetail, err error) {
+	if err = q.Validate(); err != nil {
+		return page, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		page = IncidentDetail{}
+		i, e := redisIncident(ctx, tx, s.incidents, q.IncidentID)
+		if e != nil {
+			return e
+		}
+		page, e = readIncidentDetail(i, q, func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) })
+		if e != nil {
+			return e
+		}
+		return redisReadCommit(ctx, tx)
+	})
+	if err != nil {
+		return IncidentDetail{}, err
+	}
+	return
+}
+
 // Outbox reads the task hash atomically and sorts by EventID, without delivery work.
 func (s *RedisStore) Outbox(ctx context.Context) ([]Task, error) {
 	if err := s.ensure(ctx); err != nil {

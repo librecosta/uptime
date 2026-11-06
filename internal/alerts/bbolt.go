@@ -537,6 +537,25 @@ func (s *BboltStore) ListIncidents(ctx context.Context, q HistoryQuery) (page In
 	return
 }
 
+// ReadIncident reads the incident and derived task page in one bbolt snapshot.
+func (s *BboltStore) ReadIncident(ctx context.Context, q DetailQuery) (page IncidentDetail, err error) {
+	if err = q.Validate(); err != nil {
+		return page, err
+	}
+	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		i, e := decodeIncident(tx.Bucket([]byte("incidents")).Get([]byte(q.IncidentID)))
+		if e != nil {
+			return e
+		}
+		page, e = readIncidentDetail(i, q, func(id string) (*Task, error) { return boltTask(tx.Bucket([]byte("outbox")), id) })
+		return e
+	})
+	if err != nil {
+		return IncidentDetail{}, err
+	}
+	return
+}
+
 // Outbox returns all tasks ordered by EventID; it never claims or delivers them.
 func (s *BboltStore) Outbox(ctx context.Context) (tasks []Task, err error) {
 	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {

@@ -89,6 +89,7 @@ type MonitorConfig struct{ Enabled bool }
 // ConsecutiveFailures is 1 through 10, defaulting to three.
 // RecoverySuccesses is 1 through 10, defaulting to one.
 type AlertsConfig struct {
+	HistoryEnabled      bool // Opt-in read-only history; requires enabled alerts and Basic Auth.
 	Enabled             bool
 	ConsecutiveFailures int
 	RecoverySuccesses   int

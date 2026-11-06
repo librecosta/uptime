@@ -121,3 +121,25 @@ func TestMonitorAccessConfig(t *testing.T) {
 	base["ui.path"] = "/alerts"
 	wantInvalid(t, configData(t, base), emptyEnv, "ui.path")
 }
+
+func TestHistoryAccessConfig(t *testing.T) {
+	cfg := mustLoad(t, []byte(minimal), emptyEnv)
+	if cfg.Alerts.HistoryEnabled {
+		t.Fatal("old YAML enabled history")
+	}
+	base := map[string]any{"alerts.enabled": true, "alerts.history_enabled": true, "auth.enabled": true, "auth.basic.username": "operator", "auth.basic.password_hash": authHash(t), "auth.protect_uptime": false, "monitor.enabled": true}
+	cfg = mustLoad(t, configData(t, base), emptyEnv)
+	if !cfg.Alerts.HistoryEnabled || cfg.Auth.ProtectUptime {
+		t.Fatal("history access mapping")
+	}
+	base["monitor.enabled"] = false
+	for _, key := range []string{"alerts.enabled", "auth.enabled"} {
+		base[key] = false
+		wantInvalid(t, configData(t, base), emptyEnv, "alerts.history_enabled")
+		base[key] = true
+	}
+	for _, value := range []any{nil, "true", 1} {
+		base["alerts.history_enabled"] = value
+		wantInvalid(t, configData(t, base), emptyEnv, "type")
+	}
+}

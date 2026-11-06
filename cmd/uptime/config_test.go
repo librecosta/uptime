@@ -32,7 +32,7 @@ func TestConfigCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeConfig(t, "monitor.yaml", validConfig+"monitor: {enabled: true}\nauth: {enabled: true, protect_uptime: false, basic: {username: operator, password_hash: '"+string(hash)+"'}}\n")
+	writeConfig(t, "monitor.yaml", validConfig+"monitor: {enabled: true}\nalerts: {enabled: true, history_enabled: true}\nauth: {enabled: true, protect_uptime: false, basic: {username: operator, password_hash: '"+string(hash)+"'}}\n")
 	for _, args := range [][]string{
 		{"config", "check"}, {"config", "check", "--config", "custom.yaml"},
 		{"config", "check", "--config=" + filepath.Join(dir, "custom.yaml")},

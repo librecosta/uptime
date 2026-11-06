@@ -584,3 +584,43 @@ func TestRedisIntegrationHistoryDoesNotMigrate(t *testing.T) {
 	_, err = legacy.ListIncidents(ctx, HistoryQuery{})
 	must(t, err)
 }
+
+func TestRedisIntegrationIncidentDetails(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseIncidentDetails(t, s)
+}
+func TestRedisIntegrationIncidentDetailRace(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseDetailRecoveryRace(t, s)
+}
+func TestRedisIntegrationIncidentDetailCorruption(t *testing.T) {
+	s, client := alertRedis(t)
+	i := testIncident("detail-corrupt", "detail-corrupt")
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, client.HDel(t.Context(), s.outbox, eventID(i.ID, Down, "a")).Err())
+	if page, err := s.ReadIncident(t.Context(), DetailQuery{IncidentID: i.ID}); !errors.Is(err, ErrInvalid) || len(page.Tasks) != 0 {
+		t.Fatal("missing task silently omitted")
+	}
+}
+
+func TestRedisIntegrationIncidentDetailTornRead(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := t.Context()
+	i := testIncident("detail-interleaved", "detail-interleaved")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	options := *client.Options()
+	otherClient := redis.NewClient(&options)
+	defer otherClient.Close()
+	other, err := NewRedisStore(otherClient, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Minute)
+	hook := &interleavedRecovery{activeKey: s.outbox, recover: func() error { _, err := other.Apply(ctx, Transition{Recovered, i}); return err }}
+	client.AddHook(hook)
+	page, err := s.ReadIncident(ctx, DetailQuery{IncidentID: i.ID})
+	must(t, err)
+	if !hook.once.Load() || page.Incident.RecoveredAt.IsZero() || len(page.Tasks) != 4 {
+		t.Fatal("detail did not retry invalidated snapshot")
+	}
+}

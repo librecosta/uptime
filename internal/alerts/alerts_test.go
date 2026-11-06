@@ -1377,3 +1377,116 @@ func TestReminderUncertainReconciliation(t *testing.T) {
 		})
 	}
 }
+
+func exerciseIncidentDetails(t *testing.T, s interface {
+	deliveryTestStore
+	HistoryStore
+}) {
+	t.Helper()
+	exerciseReminders(t, s) // Real persisted retries, failed predecessor and recovery cancellation.
+	ctx := t.Context()
+	cursor := ""
+	seen := map[string]bool{}
+	states := map[TaskStatus]bool{}
+	for pages := 0; ; pages++ {
+		page, err := s.ReadIncident(ctx, DetailQuery{IncidentID: "durable-reminders", Cursor: cursor, Limit: 3})
+		must(t, err)
+		if page.Incident.RecoveredAt.IsZero() || page.Incident.ReminderCount != 3 || len(page.Tasks) > 3 {
+			t.Fatal("inconsistent detail snapshot")
+		}
+		for _, task := range page.Tasks {
+			if seen[task.EventID] {
+				t.Fatal("duplicate detail task")
+			}
+			seen[task.EventID] = true
+			states[task.Status] = true
+			if task.Type == Reminder && task.ChannelID == "a" && task.ReminderSequence == 2 && (task.Attempts != 1 || task.Status != TaskSkipped || len(task.AttemptReceipts) != 1) {
+				t.Fatal("detail lost canceled retry history")
+			}
+		}
+		cursor = page.NextCursor
+		if cursor == "" {
+			break
+		}
+		if pages > 5 {
+			t.Fatal("detail cursor loop")
+		}
+	}
+	if len(seen) != 10 || len(states) != 4 {
+		t.Fatal("missing history event or delivery state")
+	}
+	for _, channels := range [][]string{nil, {"a", "b"}} {
+		i := testIncident(fmt.Sprintf("legacy-%d", len(channels)), fmt.Sprintf("legacy-endpoint-%d", len(channels)))
+		i.ChannelIDs = channels
+		_, err := s.Apply(ctx, Transition{Down, i})
+		must(t, err)
+		page, err := s.ReadIncident(ctx, DetailQuery{IncidentID: i.ID})
+		must(t, err)
+		if len(page.Tasks) != len(channels) || page.Incident.ReminderPolicy != nil || !page.Incident.RecoveredAt.IsZero() {
+			t.Fatal("legacy/no-channel history changed")
+		}
+	}
+	many := testIncident("many-channels", "many-channels")
+	many.ChannelIDs = nil
+	for n := range 61 {
+		many.ChannelIDs = append(many.ChannelIDs, fmt.Sprintf("channel-%03d", n))
+	}
+	_, err := s.Apply(ctx, Transition{Down, many})
+	must(t, err)
+	page, err := s.ReadIncident(ctx, DetailQuery{IncidentID: many.ID})
+	must(t, err)
+	if len(page.Tasks) != 20 || page.NextCursor == "" {
+		t.Fatal("unbounded detail default")
+	}
+	count := 0
+	_, err = readIncidentDetail(&many, DetailQuery{IncidentID: many.ID, Limit: 50}, func(id string) (*Task, error) { count++; return s.GetTask(ctx, id) })
+	must(t, err)
+	if count != 50 {
+		t.Fatal("detail exceeded its read bound")
+	}
+	for _, q := range []DetailQuery{{IncidentID: "../invalid"}, {IncidentID: many.ID, Limit: 51}, {IncidentID: many.ID, Cursor: "invalid"}, {IncidentID: "other", Cursor: page.NextCursor}, {IncidentID: many.ID, Cursor: strings.Repeat("x", 1025)}} {
+		if _, err := s.ReadIncident(ctx, q); !errors.Is(err, ErrInvalid) {
+			t.Fatal("invalid detail query accepted")
+		}
+	}
+	if _, err := s.ReadIncident(ctx, DetailQuery{IncidentID: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatal("missing incident accepted")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.ReadIncident(ctx, DetailQuery{IncidentID: many.ID}); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled detail read")
+	}
+}
+func TestBboltIncidentDetails(t *testing.T) { exerciseIncidentDetails(t, testBbolt(t)) }
+
+func exerciseDetailRecoveryRace(t *testing.T, s interface {
+	Store
+	HistoryStore
+}) {
+	i := testIncident("detail-race", "detail-race")
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 20 {
+			page, err := s.ReadIncident(t.Context(), DetailQuery{IncidentID: i.ID})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			want := 2
+			if !page.Incident.RecoveredAt.IsZero() {
+				want = 4
+			}
+			if len(page.Tasks) != want {
+				t.Error("torn incident/task read")
+			}
+		}
+	})
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Minute)
+	_, err = s.Apply(t.Context(), Transition{Recovered, i})
+	must(t, err)
+	wg.Wait()
+}
+func TestBboltIncidentDetailRace(t *testing.T) { exerciseDetailRecoveryRace(t, testBbolt(t)) }

@@ -54,6 +54,8 @@ alerts:
   # Optional incident tracking and notifications; channel variables are ignored
   # while disabled. Use only one alert executor per database/Redis prefix.
   enabled: false
+  # Read-only /alerts page and API; requires enabled alerts and Basic Auth.
+  history_enabled: false
   consecutive_failures: 3 # 1 through 10; confirms an incident.
   recovery_successes: 1 # 1 through 10; consecutive successes needed to resolve it.
   # Both zero disables reminders. When enabled: 5m through 720h, limit 1 through 10.

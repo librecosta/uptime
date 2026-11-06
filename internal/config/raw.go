@@ -33,6 +33,7 @@ type rawConfig struct {
 	} `yaml:"monitor"`
 	Alerts struct {
 		Enabled             bool              `yaml:"enabled"`
+		HistoryEnabled      bool              `yaml:"history_enabled"`
 		ConsecutiveFailures *int              `yaml:"consecutive_failures"`
 		RecoverySuccesses   *int              `yaml:"recovery_successes"`
 		ReminderInterval    *string           `yaml:"reminder_interval"`

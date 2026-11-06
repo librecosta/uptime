@@ -155,7 +155,7 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		}
 	}
 
-	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures, RecoverySuccesses: *raw.Alerts.RecoverySuccesses}
+	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, HistoryEnabled: raw.Alerts.HistoryEnabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures, RecoverySuccesses: *raw.Alerts.RecoverySuccesses}
 	if cfg.Alerts.ConsecutiveFailures < 1 || cfg.Alerts.ConsecutiveFailures > 10 {
 		n.fail("alerts.consecutive_failures", "expected an integer from 1 through 10")
 	}
@@ -232,6 +232,9 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 	}
 	if cfg.Monitor.Enabled && cfg.Auth == nil {
 		n.fail("monitor.enabled", "requires enabled Basic Auth with valid credentials")
+	}
+	if cfg.Alerts.HistoryEnabled && (!cfg.Alerts.Enabled || cfg.Auth == nil) {
+		n.fail("alerts.history_enabled", "requires enabled alerts and Basic Auth with valid credentials")
 	}
 	// Preserve the distinction between omission and an explicit empty sequence:
 	// maintenance may operate after the last endpoint is retired, but not on an

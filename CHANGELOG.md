@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Optional authenticated `/alerts` history page and read-only incident JSON APIs,
+  with UTC times, light/dark themes, bounded incident/task pagination and
+  per-channel delivery details. Disabled by default; shares existing alert storage
+  without schema changes or additional workers.
 - Optional native Fiber Contrib Monitor v1.2.4 dashboard and JSON snapshots at
   `/monitor`, with authenticated access and HTTP statistics including recovered
   5xx responses. Monitor requests do not count themselves; Monitor stays off

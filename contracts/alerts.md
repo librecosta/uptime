@@ -1,4 +1,4 @@
-# Alert Contract (v0.2.0 and v0.2.1-B1)
+# Alert Contract (v0.2.0 and v0.2.1)
 
 `internal/alerts` is an independent, observation-driven core. `internal/app`
 optionally feeds it upstream endpoint probe results. Alerts are disabled by
@@ -429,7 +429,44 @@ These in-process alerts cannot detect the monitor's complete process failure.
   schema and never initiates migration from a query. Each returned row must match
   its index; missing or
   corrupt records are errors, never silently omitted. Pages are not a cross-call
-  snapshot. No history HTTP API, page, retention sweep or automatic cleanup exists.
+  snapshot. The optional read-only UI/API is specified below; no retention sweep or automatic cleanup exists.
+
+## Read-only alert history (v0.2.1-C)
+
+- `alerts.history_enabled` defaults false. Enabling it requires enabled alerts and
+  valid enabled Basic Auth; config check remains offline and never migrates data.
+  Disabled history registers no page/API, creates no connection and starts no worker.
+  Existing alert runtime storage is borrowed and remains owned by its original owner.
+  Fiber drains HTTP readers before alert workers/storage close.
+- `/alerts` (also `/alerts/`) serves an embedded Go HTML template with native
+  CSS/JS. Basic Auth protects the complete namespace, including HEAD, JSON, unknown
+  descendants and Fiber-normalized aliases. `auth.protect_uptime: false` never
+  publishes history or enabled Monitor. Health/root redirect behavior is unchanged.
+  All history responses prohibit caching. Template escaping, text-only DOM updates,
+  per-response CSP nonces and no external assets protect endpoint display names.
+- GET/HEAD `/alerts/api/incidents` uses `HistoryStore.ListIncidents` directly.
+  `limit` defaults 20, range 1..50; `cursor` is the B2 exclusive time/ID keyset.
+  Unknown/duplicate/empty parameters, noncanonical limits and malformed cursors
+  return safe 400 errors. Missing incident detail returns 404; unreadable/corrupt
+  persistence returns a fixed 503, never a raw storage error or partial page.
+- GET/HEAD `/alerts/api/incidents/:id` uses `HistoryStore.ReadIncident` and the same
+  limit bounds. IDs use 1..256 ASCII letters/digits/`.`/`_`/`-`, starting with a letter/digit. Detail cursors are
+  bounded, canonical and bound to the incident ID. Tasks are derived in event-major
+  order (DOWN, issued reminders, then recovery), with frozen sorted channels within
+  each event. Read only the requested tasks, at most 50, without Outbox/HGETALL or
+  additional indexes. Missing/corrupt expected tasks fail the page, never disappear.
+- Each detail page reads incident/tasks in one bbolt View or validated Redis WATCH
+  read-only EXEC. Concurrent recovery/outcomes retry the Redis snapshot. No schema,
+  key, migration or persistent value is changed. Separate pages/refreshes may see
+  later updates; pagination is not a reservation or cross-request snapshot.
+- API projections contain only incident/endpoint identities, current display name
+  (saved endpoint ID when removed), state/times, duration/reminder count and safe
+  task delivery fields. No configuration, URLs, credentials, raw errors, attempt
+  IDs or receipts are exposed. Times are UTC; duration starts at first failure and
+  ends at recovery, or request time while FIRING. Refresh updates the snapshot.
+- There are no write methods, ACK, resend, deletion, config editing, retention or
+  background cleanup actions. Delivery ownership/at-least-once guarantees remain
+  unchanged.
 
 ## Boundary and verification
 

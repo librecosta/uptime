@@ -83,6 +83,9 @@ func (s *Server) Run(ctx context.Context) (result error) {
 		}
 		uptimeConfig.OnProbeResult = s.alerts.hook
 	}
+	if err := s.registerAlertHistory(); err != nil {
+		return err
+	}
 	handler, err := newUptime(uptimeConfig)
 	if err != nil {
 		return err

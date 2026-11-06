@@ -459,3 +459,14 @@ func TestBboltReadsDevelopReminderSnapshot(t *testing.T) {
 	_, err = s.ApplyReminder(t.Context(), ReminderChange{i.ID, 0, i.NextReminderAt})
 	must(t, err)
 }
+
+func TestBboltIncidentDetailCorruption(t *testing.T) {
+	s := testBbolt(t)
+	i := testIncident("detail-corrupt", "detail-corrupt")
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("outbox")).Delete([]byte(eventID(i.ID, Down, "a"))) }))
+	if page, err := s.ReadIncident(t.Context(), DetailQuery{IncidentID: i.ID}); !errors.Is(err, ErrInvalid) || len(page.Tasks) != 0 {
+		t.Fatal("missing task silently omitted")
+	}
+}
