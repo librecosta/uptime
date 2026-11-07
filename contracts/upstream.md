@@ -5,6 +5,31 @@ bbolt v1.5.0, stable `go.yaml.in/yaml/v3` v3.0.6, x/crypto v0.58.0 (bcrypt)
 and x/text v0.43.0 (username NFC). `go.mod` is authoritative. No CLI/config
 framework is used.
 
+## v0.2.1 Monitor integration
+
+Use the stable `github.com/gofiber/contrib/v3/monitor` v1.2.4 module alongside
+the unchanged Uptime pin. Global Monitor's `Next` instruments non-Monitor requests;
+an auth guard precedes its terminating dashboard handler, and Recover follows it
+so recovered 5xx responses reach native HTTP statistics. Keep native HTML/JSON,
+3s refresh/cache, disabled exact GC pause metrics and unsupported-metric behavior.
+No upstream code, dashboard assets or collection algorithm is copied or wrapped.
+
+Monitor is not constructed when disabled. Its gopsutil CPU dependency still reads
+baselines in package init before configuration is loaded. This one-time upstream
+initialization is accepted; disabled Monitor performs no request-time or ongoing
+collection. No extra worker, metrics database or shutdown hook is introduced.
+
+The only existing selected-module version change required by Monitor is
+`github.com/lufia/plan9stats`, from `v0.0.0-20260330125221-c963978e514e` to
+`v0.0.0-20260802145828-341c2f0c90b5`. Monitor brings gopsutil/v4 v4.26.10 and
+its platform dependencies into the product import graph; these versions were
+already selected through upstream test dependencies. `google/go-cmp` v0.7.0 is
+added only to that upstream test graph. Fiber, Uptime, Redis, bbolt, YAML,
+crypto/text and the Go minimum/recommended toolchain remain unchanged.
+Tests cover native snapshots, request counting, recovered panics, HTTP/HTTPS
+authentication, public Uptime with private Monitor, path aliases and disabled
+behavior. Existing lifecycle, alerts and persistence suites remain authoritative.
+
 ## B2 probe-result integration
 
 Fiber Uptime is pinned to merged [PR #2604](https://github.com/gofiber/contrib/pull/2604)
@@ -156,6 +181,7 @@ real Redis integration job; the original-schema fixture opens pre-branding data.
 | Go | Toolchain/runtime | Support window follows the active Fiber major version |
 | Fiber v3 | HTTP/runtime lifecycle | Fiber hooks own runtime lifecycle |
 | Fiber Contrib Uptime | Uptime engine | Upstream semantics remain authoritative unless explicitly overridden |
+| Fiber Contrib Monitor | Optional process/HTTP dashboard | Native collection/rendering, authenticated namespace, no persistence |
 | Fiber Storage Redis | Optional external persistence | Borrowed connection passed to Uptime's native Redis backend |
 | go-redis | Owned Redis connection | ParseURL, context-aware Ping and explicit client Close |
 | bbolt | Embedded persistence | Single-process file locking and explicit transaction model |
@@ -177,9 +203,10 @@ P3–P6-A verify these lifecycle assumptions against pinned source and tests:
   challenge/cache headers, and password verification via Users. LibreCosta narrows
   configuration to bcrypt ($2a$/$2b$/$2y$) and validates structure plus bcrypt.Cost;
   it never copies Fiber's hash parser or compares passwords in config check.
-- Construct optional BasicAuth after public health and before uptime.New; convert
-  only constructor panic to a safe error. Auth's Next uses the exact configured
-  UI namespace; similar prefixes remain unprotected. No request logger is added.
+- Construct optional BasicAuth before uptime.New; convert only constructor panic
+  to a safe error. Share it between the pre-Monitor guard and downstream UI/alerts
+  protection. Auth's Next uses exact/slash namespaces, with UI protection opt-out;
+  similar prefixes remain unprotected. No request logger is added.
 
 - `uptime.New` starts runtime workers during construction. Open selected storage,
   complete preflight Ping, and bind first. bbolt supplies `Config.Storage` with

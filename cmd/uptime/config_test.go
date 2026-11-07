@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	bolt "go.etcd.io/bbolt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const validConfig = "endpoints: [{id: web, url: 'https://example.invalid/health'}]\n"
@@ -24,10 +28,16 @@ func TestConfigCheck(t *testing.T) {
 	writeConfig(t, "uptime.yaml", validConfig)
 	writeConfig(t, "custom.yaml", validConfig)
 	writeConfig(t, "alerts.yaml", validConfig+"alerts: {enabled: true, consecutive_failures: 3}\n")
+	hash, err := bcrypt.GenerateFromPassword([]byte("test-only"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, "monitor.yaml", validConfig+"monitor: {enabled: true}\nalerts: {enabled: true, history_enabled: true}\nauth: {enabled: true, protect_uptime: false, basic: {username: operator, password_hash: '"+string(hash)+"'}}\n")
 	for _, args := range [][]string{
 		{"config", "check"}, {"config", "check", "--config", "custom.yaml"},
 		{"config", "check", "--config=" + filepath.Join(dir, "custom.yaml")},
 		{"config", "check", "--config", "alerts.yaml"},
+		{"config", "check", "--config", "monitor.yaml"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(context.Background(), args, &stdout, &stderr); code != 0 || stdout.String() != "configuration is valid\n" || stderr.Len() != 0 {
@@ -35,7 +45,7 @@ func TestConfigCheck(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 3 {
+	if err != nil || len(entries) != 4 {
 		t.Fatal("config check created unexpected files")
 	}
 }
@@ -167,5 +177,51 @@ func TestConfigOutputFailures(t *testing.T) {
 		if code := run(context.Background(), args, &stdout, failingWriter{}); code != 1 {
 			t.Fatalf("stderr failure: code=%d", code)
 		}
+	}
+}
+
+func TestConfigCheckDoesNotMigrateAlertDB(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	db, err := bolt.Open("alerts.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		for _, name := range []string{"meta", "incidents", "active", "outbox"} {
+			if _, err := tx.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		meta := tx.Bucket([]byte("meta"))
+		if err := meta.Put([]byte("format"), []byte("librecosta-uptime-alerts")); err != nil {
+			return err
+		}
+		return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 1))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile("alerts.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, "uptime.yaml", validConfig+"storage: {type: bbolt, bbolt: {path: ./uptime.db}}\nalerts: {enabled: true, reminder_interval: 5m, reminder_limit: 2}\n")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"config", "check"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("offline check: %s", &stderr)
+	}
+	after, err := os.ReadFile("alerts.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("config check changed existing v1 alert DB")
+	}
+	if _, err := os.Stat("uptime.db"); !os.IsNotExist(err) {
+		t.Fatal("config check opened monitoring database")
 	}
 }

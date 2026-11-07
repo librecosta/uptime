@@ -16,7 +16,7 @@ import (
 
 const alertFormat = "librecosta-uptime-alerts"
 
-var alertBuckets = []string{"meta", "incidents", "active", "outbox"}
+var alertBuckets = []string{"meta", "incidents", "active", "outbox", "incidents_by_time"}
 
 // BboltStore owns a separate, exclusively locked alert database. Close it after
 // stopping callers. It never opens or migrates the monitoring history database.
@@ -28,6 +28,7 @@ type BboltStore struct {
 
 // OpenBbolt initializes only a file created by this call. Existing empty,
 // foreign, damaged, or unsupported databases are refused without repair.
+// Recognized v1 files upgrade transactionally before callers can access v2.
 // Callers explicitly choose a path; the opt-in runtime uses a sibling alerts.db.
 func OpenBbolt(path string, timeout time.Duration) (*BboltStore, error) {
 	if path == "" || timeout < 0 {
@@ -81,11 +82,22 @@ func OpenBbolt(path string, timeout time.Duration) (*BboltStore, error) {
 				if err := meta.Put([]byte("format"), []byte(alertFormat)); err != nil {
 					return err
 				}
-				return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 1))
+				return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 2))
 			})
 		}
 		if err == nil {
-			err = db.View(checkAlertSchema)
+			var version uint64
+			err = db.View(func(tx *bolt.Tx) error {
+				var err error
+				version, err = alertSchemaVersion(tx)
+				return err
+			})
+			if err == nil && version == 1 {
+				err = db.Update(migrateAlertBbolt)
+			}
+			if err == nil {
+				err = db.View(checkAlertSchema)
+			}
 		}
 		if err == nil {
 			db.NoFreelistSync = false
@@ -101,18 +113,81 @@ func OpenBbolt(path string, timeout time.Duration) (*BboltStore, error) {
 	return nil, err
 }
 
-func checkAlertSchema(tx *bolt.Tx) error {
-	for _, name := range alertBuckets {
+func alertSchemaVersion(tx *bolt.Tx) (uint64, error) {
+	for _, name := range alertBuckets[:4] {
 		if tx.Bucket([]byte(name)) == nil {
-			return ErrInvalid
+			return 0, ErrInvalid
 		}
 	}
 	meta := tx.Bucket([]byte("meta"))
-	version := meta.Get([]byte("schema_version"))
-	if string(meta.Get([]byte("format"))) != alertFormat || len(version) != 8 || binary.BigEndian.Uint64(version) != 1 {
+	v := meta.Get([]byte("schema_version"))
+	if string(meta.Get([]byte("format"))) != alertFormat || len(v) != 8 {
+		return 0, ErrInvalid
+	}
+	version := binary.BigEndian.Uint64(v)
+	if version != 1 && version != 2 {
+		return 0, ErrInvalid
+	}
+	return version, nil
+}
+func checkAlertSchema(tx *bolt.Tx) error {
+	version, err := alertSchemaVersion(tx)
+	if err != nil || version != 2 || tx.Bucket([]byte("incidents_by_time")) == nil {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// A failed validation rolls back both the index and version in this one Update.
+func migrateAlertBbolt(tx *bolt.Tx) error {
+	if tx.Bucket([]byte("incidents_by_time")) != nil {
+		return ErrInvalid
+	}
+	index, err := tx.CreateBucket([]byte("incidents_by_time"))
+	if err != nil {
+		return err
+	}
+	incidents, active, outbox := tx.Bucket([]byte("incidents")), tx.Bucket([]byte("active")), tx.Bucket([]byte("outbox"))
+	read := func(id string) (*Task, error) { return boltTask(outbox, id) }
+	if err := incidents.ForEach(func(k, v []byte) error {
+		i, err := decodeIncident(v)
+		if err != nil || i == nil || i.ID != string(k) || validateLegacyIncident(*i) != nil {
+			return ErrInvalid
+		}
+		if err := validateLegacyLinks(*i, string(active.Get([]byte(i.EndpointID))), read); err != nil {
+			return err
+		}
+		key, err := historyKey(*i)
+		if err != nil {
+			return err
+		}
+		return index.Put([]byte(key), k)
+	}); err != nil {
+		return err
+	}
+	if err := active.ForEach(func(k, v []byte) error {
+		i, err := decodeIncident(incidents.Get(v))
+		if err != nil || i == nil || i.ID != string(v) || i.EndpointID != string(k) || !i.RecoveredAt.IsZero() {
+			return ErrInvalid
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := outbox.ForEach(func(k, v []byte) error {
+		t, err := decodeTask(v)
+		if err != nil || t.EventID != string(k) || t.Type == Reminder {
+			return ErrInvalid
+		}
+		i, err := decodeIncident(incidents.Get([]byte(t.IncidentID)))
+		if err != nil {
+			return err
+		}
+		return validateStoredTask(t, i)
+	}); err != nil {
+		return err
+	}
+	return tx.Bucket([]byte("meta")).Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 2))
 }
 
 func (s *BboltStore) transaction(ctx context.Context, write bool, fn func(*bolt.Tx) error) error {
@@ -174,7 +249,7 @@ func (s *BboltStore) Active(ctx context.Context, endpoint string) (result *Incid
 	return result, err
 }
 
-// Apply commits an incident, active index, and all channel tasks in one transaction.
+// Apply commits an incident, history index, and derived tasks atomically.
 func (s *BboltStore) Apply(ctx context.Context, change Transition) (result Incident, err error) {
 	err = s.transaction(ctx, true, func(tx *bolt.Tx) error {
 		incidents, active, outbox := tx.Bucket([]byte("incidents")), tx.Bucket([]byte("active")), tx.Bucket([]byte("outbox"))
@@ -187,11 +262,11 @@ func (s *BboltStore) Apply(ctx context.Context, change Transition) (result Incid
 		if err != nil || tasks == nil {
 			return err
 		}
-		data, err := json.Marshal(result)
+		tasks, err = transitionTasks(result, tasks, func(id string) (*Task, error) { return boltTask(outbox, id) })
 		if err != nil {
 			return err
 		}
-		if err := incidents.Put([]byte(result.ID), data); err != nil {
+		if err := boltPutIncident(tx, result); err != nil {
 			return err
 		}
 		if change.Type == Down {
@@ -202,31 +277,71 @@ func (s *BboltStore) Apply(ctx context.Context, change Transition) (result Incid
 		if err != nil {
 			return err
 		}
-		for _, task := range tasks {
-			if task.Type == Recovered {
-				down, err := boltTask(outbox, eventID(task.IncidentID, Down, task.ChannelID))
-				if err != nil {
-					return err
-				}
-				task, err = skipRecovery(task, down)
-				if err != nil {
-					return err
-				}
-			}
-			data, err := json.Marshal(task)
-			if err != nil {
-				return err
-			}
-			if outbox.Get([]byte(task.EventID)) != nil {
-				return ErrConflict
-			}
-			if err := outbox.Put([]byte(task.EventID), data); err != nil {
-				return err
-			}
-		}
-		return nil
+		return boltPutTasks(outbox, tasks)
 	})
 	return result, err
+}
+
+// ApplyReminder atomically advances the frozen counter and creates its tasks.
+func (s *BboltStore) ApplyReminder(ctx context.Context, c ReminderChange) (result Incident, err error) {
+	err = s.transaction(ctx, true, func(tx *bolt.Tx) error {
+		i, err := decodeIncident(tx.Bucket([]byte("incidents")).Get([]byte(c.IncidentID)))
+		if err != nil {
+			return err
+		}
+		if i == nil {
+			return ErrNotFound
+		}
+		outbox := tx.Bucket([]byte("outbox"))
+		read := func(id string) (*Task, error) { return boltTask(outbox, id) }
+		var tasks []Task
+		result, tasks, err = prepareReminderChange(i, string(tx.Bucket([]byte("active")).Get([]byte(i.EndpointID))), c, read)
+		if err != nil || tasks == nil {
+			return err
+		}
+		tasks, err = transitionTasks(result, tasks, read)
+		if err != nil {
+			return err
+		}
+		if err := boltPutIncident(tx, result); err != nil {
+			return err
+		}
+		return boltPutTasks(outbox, tasks)
+	})
+	return result, err
+}
+
+func boltPutIncident(tx *bolt.Tx, i Incident) error {
+	key, err := historyKey(i)
+	if err != nil {
+		return err
+	}
+	// Runtime writes must not silently repair a damaged or orphaned index.
+	existing := tx.Bucket([]byte("incidents")).Get([]byte(i.ID)) != nil
+	indexed := tx.Bucket([]byte("incidents_by_time")).Get([]byte(key))
+	if existing && string(indexed) != i.ID || !existing && indexed != nil {
+		return ErrInvalid
+	}
+	data, err := json.Marshal(i)
+	if err != nil {
+		return err
+	}
+	if err := tx.Bucket([]byte("incidents")).Put([]byte(i.ID), data); err != nil {
+		return err
+	}
+	return tx.Bucket([]byte("incidents_by_time")).Put([]byte(key), []byte(i.ID))
+}
+func boltPutTasks(b *bolt.Bucket, tasks []Task) error {
+	for _, t := range tasks {
+		data, err := json.Marshal(t)
+		if err != nil {
+			return err
+		}
+		if err = b.Put([]byte(t.EventID), data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var _ DeliveryStore = (*BboltStore)(nil)
@@ -288,17 +403,11 @@ func (s *BboltStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error)
 			if task.EventID != string(key) {
 				return ErrInvalid
 			}
-			var down *Task
-			if task.Type == Recovered && task.Status == TaskPending {
-				down, err = boltTask(bucket, eventID(task.IncidentID, Down, task.ChannelID))
-				if err != nil {
-					return err
-				}
-				if down == nil {
-					return ErrInvalid
-				}
+			ready, _, err := boltReadDelivery(tx, task, q.Now)
+			if err != nil {
+				return err
 			}
-			if deliverable(task, down, q.Now) {
+			if ready {
 				page.Tasks = append(page.Tasks, task)
 			}
 			page.NextCursor = string(key)
@@ -315,62 +424,136 @@ func (s *BboltStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error)
 	return page, nil
 }
 
-// RecordOutcome atomically persists a conditional attempt and any dependent
-// recovery skip. Errors may leave commit status unknown; GetTask permits read-back.
+// ReadDelivery rechecks a candidate and its dependency chain in one read snapshot.
+func (s *BboltStore) ReadDelivery(ctx context.Context, id string, now time.Time) (task *Task, i *Incident, err error) {
+	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		t, e := boltTask(tx.Bucket([]byte("outbox")), id)
+		if e != nil {
+			return e
+		}
+		if t == nil {
+			return ErrNotFound
+		}
+		ready, incident, e := boltReadDelivery(tx, *t, now)
+		if e == nil && ready {
+			task, i = t, incident
+		}
+		return e
+	})
+	return
+}
+func boltReadDelivery(tx *bolt.Tx, t Task, now time.Time) (bool, *Incident, error) {
+	i, err := decodeIncident(tx.Bucket([]byte("incidents")).Get([]byte(t.IncidentID)))
+	if err != nil {
+		return false, nil, err
+	}
+	if i == nil {
+		return false, nil, ErrInvalid
+	}
+	down, prev, err := deliveryDependencies(t, *i, func(id string) (*Task, error) { return boltTask(tx.Bucket([]byte("outbox")), id) })
+	if err != nil {
+		return false, nil, err
+	}
+	ready, err := DeliveryReady(t, *i, down, prev, now)
+	return ready, i, err
+}
+
+// RecordOutcome conditionally records a send and all resulting dependency skips.
 func (s *BboltStore) RecordOutcome(ctx context.Context, o Outcome) (result Task, err error) {
 	if _, _, err := normalizeOutcome(o); err != nil {
 		return Task{}, err
 	}
 	err = s.transaction(ctx, true, func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("outbox"))
-		task, err := boltTask(bucket, o.EventID)
+		b := tx.Bucket([]byte("outbox"))
+		read := func(id string) (*Task, error) { return boltTask(b, id) }
+		t, err := read(o.EventID)
 		if err != nil {
 			return err
 		}
-		if task == nil {
+		if t == nil {
 			return ErrNotFound
 		}
-		var down *Task
-		if task.Type == Recovered {
-			down, err = boltTask(bucket, eventID(task.IncidentID, Down, task.ChannelID))
-			if err != nil {
-				return err
-			}
-			if down == nil {
-				return ErrInvalid
-			}
-		}
-		var changed bool
-		result, changed, err = prepareOutcome(*task, down, o)
-		if err != nil || !changed {
-			return err
-		}
-		if result.Type == Down && (result.Status == TaskFailed || result.Status == TaskSkipped) {
-			recovery, err := boltTask(bucket, eventID(result.IncidentID, Recovered, result.ChannelID))
-			if err != nil {
-				return err
-			}
-			if recovery != nil {
-				skipped, err := skipRecovery(*recovery, &result)
-				if err != nil {
-					return err
-				}
-				data, err := json.Marshal(skipped)
-				if err != nil {
-					return err
-				}
-				if err := bucket.Put([]byte(skipped.EventID), data); err != nil {
-					return err
-				}
-			}
-		}
-		data, err := json.Marshal(result)
+		i, err := decodeIncident(tx.Bucket([]byte("incidents")).Get([]byte(t.IncidentID)))
 		if err != nil {
 			return err
 		}
-		return bucket.Put([]byte(result.EventID), data)
+		if i == nil {
+			return ErrInvalid
+		}
+		var tasks []Task
+		result, tasks, err = outcomeTasks(*t, *i, o, read)
+		if err != nil {
+			return err
+		}
+		return boltPutTasks(b, tasks)
 	})
-	return result, err
+	return
+}
+
+// ListIncidents uses the time index directly, with an exclusive reverse cursor.
+func (s *BboltStore) ListIncidents(ctx context.Context, q HistoryQuery) (page IncidentPage, err error) {
+	limit, anchor, err := historyQuery(q)
+	if err != nil {
+		return page, err
+	}
+	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		index := tx.Bucket([]byte("incidents_by_time"))
+		incidents := tx.Bucket([]byte("incidents"))
+		lastKey := ""
+		c := index.Cursor()
+		k, v := c.Last()
+		if anchor != "" {
+			k, v = c.Seek([]byte(anchor))
+			if k == nil {
+				k, v = c.Last()
+			} else {
+				k, v = c.Prev()
+			}
+		}
+		for k != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			i, e := decodeIncident(incidents.Get(v))
+			if e != nil {
+				return e
+			}
+			if e = indexedIncident(string(k), i); e != nil || i.ID != string(v) {
+				return ErrInvalid
+			}
+			if len(page.Incidents) == limit {
+				page.NextCursor = historyCursor(lastKey)
+				break
+			}
+			page.Incidents = append(page.Incidents, *i)
+			lastKey = string(k)
+			k, v = c.Prev()
+		}
+		return nil
+	})
+	if err != nil {
+		return IncidentPage{}, err
+	}
+	return
+}
+
+// ReadIncident reads the incident and derived task page in one bbolt snapshot.
+func (s *BboltStore) ReadIncident(ctx context.Context, q DetailQuery) (page IncidentDetail, err error) {
+	if err = q.Validate(); err != nil {
+		return page, err
+	}
+	err = s.transaction(ctx, false, func(tx *bolt.Tx) error {
+		i, e := decodeIncident(tx.Bucket([]byte("incidents")).Get([]byte(q.IncidentID)))
+		if e != nil {
+			return e
+		}
+		page, e = readIncidentDetail(i, q, func(id string) (*Task, error) { return boltTask(tx.Bucket([]byte("outbox")), id) })
+		return e
+	})
+	if err != nil {
+		return IncidentDetail{}, err
+	}
+	return
 }
 
 // Outbox returns all tasks ordered by EventID; it never claims or delivers them.

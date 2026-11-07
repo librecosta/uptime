@@ -89,6 +89,9 @@ func (s *Feishu) Send(ctx context.Context, m Message) (Result, error) {
 	}
 	payload := feishuPayload{MsgType: "text"}
 	payload.Content.Text = fmt.Sprintf("%s\nEndpoint: %s\nEndpoint ID: %s\nEvent time (UTC): %s\nIncident ID: %s", m.Task.Type, displayName(m), m.Incident.EndpointID, m.Task.OccurredAt.UTC().Format(time.RFC3339Nano), m.Incident.ID)
+	if m.Task.Type == alerts.Reminder {
+		payload.Content.Text += fmt.Sprintf("\nReminder sequence: %d", m.Task.ReminderSequence)
+	}
 	if s.keyword != "" {
 		payload.Content.Text = s.keyword + "\n" + payload.Content.Text
 	}

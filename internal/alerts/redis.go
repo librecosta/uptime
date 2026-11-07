@@ -7,16 +7,21 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 // RedisStore borrows a standalone Redis client. The caller owns its lifecycle.
-// Three alert-only hashes have no TTL. This is not a distributed executor or
-// Redis Cluster backend; WATCH covers all keys in one database transaction.
+// Alert hashes and the history index have no TTL. This is not a distributed
+// executor or Redis Cluster backend; WATCH covers all keys in one database transaction.
 type RedisStore struct {
 	client                    *redis.Client
 	incidents, active, outbox string
+	history, meta             string
+	initMu                    sync.Mutex
+	ready                     bool
 }
 
 // NewRedisStore creates no connections, workers, or keys. prefix is an explicit
@@ -26,18 +31,43 @@ func NewRedisStore(client *redis.Client, prefix string) (*RedisStore, error) {
 		return nil, ErrInvalid
 	}
 	base := strings.TrimRight(prefix, ":") + ":alerts:v1:"
-	return &RedisStore{client: client, incidents: base + "incidents", active: base + "active", outbox: base + "outbox"}, nil
+	return &RedisStore{client: client, incidents: base + "incidents", active: base + "active", outbox: base + "outbox", history: base + "history", meta: base + "meta"}, nil
 }
 
-// Check validates connectivity and namespace types before runtime handoff. It
-// creates no keys; Apply still checks types under WATCH before every transition.
+// Check migrates legacy alert records in resumable batches and marks Schema v2
+// ready only after validation. Call before handing the borrowed client to workers.
 func (s *RedisStore) Check(ctx context.Context) error {
-	for _, key := range []string{s.incidents, s.active, s.outbox} {
-		kind, err := s.client.Type(ctx, key).Result()
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	if err := s.migrate(ctx); err != nil {
+		return err
+	}
+	s.ready = true
+	return nil
+}
+func (s *RedisStore) ensure(ctx context.Context) error {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	if s.ready {
+		return ctx.Err()
+	}
+	if err := s.migrate(ctx); err != nil {
+		return err
+	}
+	s.ready = true
+	return nil
+}
+func (s *RedisStore) checkTypes(ctx context.Context, client redis.Cmdable) error {
+	for _, key := range []string{s.incidents, s.active, s.outbox, s.meta, s.history} {
+		kind, err := client.Type(ctx, key).Result()
 		if err != nil {
 			return err
 		}
-		if kind != "none" && kind != "hash" {
+		want := "hash"
+		if key == s.history {
+			want = "zset"
+		}
+		if kind != "none" && kind != want {
 			return ErrInvalid
 		}
 	}
@@ -61,12 +91,18 @@ func redisIncident(ctx context.Context, client redis.Cmdable, key, id string) (*
 
 // Get reads the durable incident for reconciliation after an uncertain EXEC result.
 func (s *RedisStore) Get(ctx context.Context, id string) (*Incident, error) {
+	if err := s.ensure(ctx); err != nil {
+		return nil, err
+	}
 	return redisIncident(ctx, s.client, s.incidents, id)
 }
 
 // Active uses WATCH even for reads so the index and record form one snapshot.
 func (s *RedisStore) Active(ctx context.Context, endpoint string) (result *Incident, err error) {
-	err = s.watch(ctx, func(tx *redis.Tx) error {
+	if err = s.ensure(ctx); err != nil {
+		return nil, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
 		result = nil
 		id, err := tx.HGet(ctx, s.active, endpoint).Result()
 		if err != nil && !errors.Is(err, redis.Nil) {
@@ -90,7 +126,10 @@ func (s *RedisStore) Active(ctx context.Context, endpoint string) (result *Incid
 func (s *RedisStore) watch(ctx context.Context, fn func(*redis.Tx) error) error {
 	for range 32 {
 		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
-			err := fn(tx)
+			err := s.checkTypes(ctx, tx)
+			if err == nil {
+				err = fn(tx)
+			}
 			if errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) {
 				// WATCH does not make separate reads a snapshot. A concurrent EXEC
 				// can invalidate conditions before fn reaches its own EXEC. Validate
@@ -101,7 +140,7 @@ func (s *RedisStore) watch(ctx context.Context, fn func(*redis.Tx) error) error 
 				}
 			}
 			return err
-		}, s.incidents, s.active, s.outbox)
+		}, s.incidents, s.active, s.outbox, s.history, s.meta)
 		if !errors.Is(err, redis.TxFailedErr) {
 			return err
 		}
@@ -109,11 +148,26 @@ func (s *RedisStore) watch(ctx context.Context, fn func(*redis.Tx) error) error 
 	return ErrConflict
 }
 
-// Apply uses watched conditions and MULTI/EXEC for the incident, index, and tasks.
-// Only transaction conflicts are retried; transport errors leave the result unknown.
+func (s *RedisStore) watchReady(ctx context.Context, fn func(*redis.Tx) error) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
+		fields, err := tx.HMGet(ctx, s.meta, "format", "schema_version", "state").Result()
+		if err != nil {
+			return err
+		}
+		if fields[0] != alertFormat || fields[1] != "2" || fields[2] != "ready" {
+			return ErrInvalid
+		}
+		return fn(tx)
+	})
+}
+
+// Apply uses watched conditions and one EXEC for the incident, history and tasks.
 func (s *RedisStore) Apply(ctx context.Context, change Transition) (result Incident, err error) {
-	err = s.watch(ctx, func(tx *redis.Tx) error {
-		existing, err := redisIncident(ctx, tx, s.incidents, change.Incident.ID)
+	if err = s.ensure(ctx); err != nil {
+		return result, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		i, err := redisIncident(ctx, tx, s.incidents, change.Incident.ID)
 		if err != nil {
 			return err
 		}
@@ -122,65 +176,109 @@ func (s *RedisStore) Apply(ctx context.Context, change Transition) (result Incid
 			return err
 		}
 		var tasks []Task
-		result, tasks, err = prepare(existing, activeID, change)
-		if err != nil || tasks == nil {
-			return err
-		}
-		data, err := json.Marshal(result)
+		result, tasks, err = prepare(i, activeID, change)
 		if err != nil {
 			return err
 		}
-		// Redis EXEC does not roll back command type errors. Check every key's
-		// type while watched, before queuing writes, to avoid partial mutations.
-		for _, key := range []string{s.incidents, s.active, s.outbox} {
-			kind, err := tx.Type(ctx, key).Result()
-			if err != nil {
-				return err
-			}
-			if kind != "none" && kind != "hash" {
-				return ErrInvalid
-			}
+		if tasks == nil {
+			return redisReadCommit(ctx, tx)
 		}
-		payload := make(map[string]any, len(tasks))
-		for _, task := range tasks {
-			if task.Type == Recovered {
-				down, err := redisTask(ctx, tx, s.outbox, eventID(task.IncidentID, Down, task.ChannelID))
-				if err != nil {
-					return err
-				}
-				task, err = skipRecovery(task, down)
-				if err != nil {
-					return err
-				}
-			}
-			found, err := tx.HExists(ctx, s.outbox, task.EventID).Result()
-			if err != nil {
-				return err
-			}
-			if found {
-				return ErrConflict
-			}
-			data, err := json.Marshal(task)
-			if err != nil {
-				return err
-			}
-			payload[task.EventID] = data
+		tasks, err = transitionTasks(result, tasks, func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) })
+		if err != nil {
+			return err
 		}
-		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
-			p.HSet(ctx, s.incidents, result.ID, data)
-			if change.Type == Down {
-				p.HSet(ctx, s.active, result.EndpointID, result.ID)
-			} else {
-				p.HDel(ctx, s.active, result.EndpointID)
-			}
-			if len(payload) > 0 {
-				p.HSet(ctx, s.outbox, payload)
-			}
-			return nil
-		})
-		return err
+		return s.writeIncident(ctx, tx, result, tasks)
 	})
-	return result, err
+	return
+}
+
+// ApplyReminder atomically advances a conditional sequence and its channel tasks.
+func (s *RedisStore) ApplyReminder(ctx context.Context, c ReminderChange) (result Incident, err error) {
+	if err = s.ensure(ctx); err != nil {
+		return result, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		i, err := redisIncident(ctx, tx, s.incidents, c.IncidentID)
+		if err != nil {
+			return err
+		}
+		if i == nil {
+			return ErrNotFound
+		}
+		activeID, err := tx.HGet(ctx, s.active, i.EndpointID).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return err
+		}
+		read := func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) }
+		var tasks []Task
+		result, tasks, err = prepareReminderChange(i, activeID, c, read)
+		if err != nil {
+			return err
+		}
+		if tasks == nil {
+			return redisReadCommit(ctx, tx)
+		}
+		tasks, err = transitionTasks(result, tasks, read)
+		if err != nil {
+			return err
+		}
+		return s.writeIncident(ctx, tx, result, tasks)
+	})
+	return
+}
+func redisReadCommit(ctx context.Context, tx *redis.Tx) error {
+	_, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error { p.Ping(ctx); return nil })
+	return err
+}
+func taskPayload(tasks []Task) (map[string]any, error) {
+	payload := make(map[string]any, len(tasks))
+	for _, t := range tasks {
+		data, err := json.Marshal(t)
+		if err != nil {
+			return nil, err
+		}
+		payload[t.EventID] = data
+	}
+	return payload, nil
+}
+func (s *RedisStore) writeIncident(ctx context.Context, tx *redis.Tx, i Incident, tasks []Task) error {
+	key, err := historyKey(i)
+	if err != nil {
+		return err
+	}
+	existing, err := tx.HExists(ctx, s.incidents, i.ID).Result()
+	if err != nil {
+		return err
+	}
+	score, err := tx.ZScore(ctx, s.history, key).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return err
+	}
+	if existing && (err != nil || score != 0) || !existing && err == nil {
+		return ErrInvalid
+	}
+	data, err := json.Marshal(i)
+	if err != nil {
+		return err
+	}
+	payload, err := taskPayload(tasks)
+	if err != nil {
+		return err
+	}
+	_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.HSet(ctx, s.incidents, i.ID, data)
+		p.ZAdd(ctx, s.history, redis.Z{Score: 0, Member: key})
+		if i.RecoveredAt.IsZero() {
+			p.HSet(ctx, s.active, i.EndpointID, i.ID)
+		} else {
+			p.HDel(ctx, s.active, i.EndpointID)
+		}
+		if len(payload) > 0 {
+			p.HSet(ctx, s.outbox, payload)
+		}
+		return nil
+	})
+	return err
 }
 
 var _ DeliveryStore = (*RedisStore)(nil)
@@ -205,6 +303,9 @@ func redisTask(ctx context.Context, client redis.Cmdable, key, id string) (*Task
 
 // GetTask reads current delivery state and replay receipts by EventID.
 func (s *RedisStore) GetTask(ctx context.Context, id string) (*Task, error) {
+	if err := s.ensure(ctx); err != nil {
+		return nil, err
+	}
 	return redisTask(ctx, s.client, s.outbox, id)
 }
 
@@ -214,6 +315,9 @@ func (s *RedisStore) GetTask(ctx context.Context, id string) (*Task, error) {
 // a weakly consistent scan, not a reservation or cross-page snapshot.
 func (s *RedisStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error) {
 	if err := validateQuery(q); err != nil {
+		return TaskPage{}, err
+	}
+	if err := s.ensure(ctx); err != nil {
 		return TaskPage{}, err
 	}
 	var cursor, offset uint64
@@ -258,18 +362,12 @@ func (s *RedisStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error)
 		if task.EventID != values[2*n] {
 			return TaskPage{}, ErrInvalid
 		}
-		var down *Task
-		if task.Type == Recovered && task.Status == TaskPending {
-			down, err = s.GetTask(ctx, eventID(task.IncidentID, Down, task.ChannelID))
-			if err != nil {
-				return TaskPage{}, err
-			}
-			if down == nil {
-				return TaskPage{}, ErrInvalid
-			}
+		current, _, err := s.ReadDelivery(ctx, task.EventID, q.Now)
+		if err != nil {
+			return TaskPage{}, err
 		}
-		if deliverable(task, down, q.Now) {
-			page.Tasks = append(page.Tasks, task)
+		if current != nil {
+			page.Tasks = append(page.Tasks, *current)
 		}
 	}
 	if end < uint64(len(values)/2) {
@@ -280,66 +378,177 @@ func (s *RedisStore) QueryDue(ctx context.Context, q DueQuery) (TaskPage, error)
 	return page, nil
 }
 
-// RecordOutcome uses WATCH and a single HSET for the task and dependent recovery.
-// Conditional conflicts retry; network errors return unchanged for reconciliation.
+// ReadDelivery rechecks a candidate, incident and dependencies under WATCH.
+func (s *RedisStore) ReadDelivery(ctx context.Context, id string, now time.Time) (task *Task, i *Incident, err error) {
+	if err = s.ensure(ctx); err != nil {
+		return
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		task, i = nil, nil
+		t, e := redisTask(ctx, tx, s.outbox, id)
+		if e != nil {
+			return e
+		}
+		if t == nil {
+			return ErrNotFound
+		}
+		incident, e := redisIncident(ctx, tx, s.incidents, t.IncidentID)
+		if e != nil {
+			return e
+		}
+		if incident == nil {
+			return ErrInvalid
+		}
+		down, previous, e := deliveryDependencies(*t, *incident, func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) })
+		if e != nil {
+			return e
+		}
+		ready, e := DeliveryReady(*t, *incident, down, previous, now)
+		if e != nil {
+			return e
+		}
+		if ready {
+			task, i = t, incident
+		}
+		return redisReadCommit(ctx, tx)
+	})
+	return
+}
+
+// RecordOutcome atomically rechecks dependencies and commits all resulting skips.
 func (s *RedisStore) RecordOutcome(ctx context.Context, o Outcome) (result Task, err error) {
 	if _, _, err := normalizeOutcome(o); err != nil {
 		return Task{}, err
 	}
-	err = s.watch(ctx, func(tx *redis.Tx) error {
-		task, err := redisTask(ctx, tx, s.outbox, o.EventID)
+	if err = s.ensure(ctx); err != nil {
+		return result, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		read := func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) }
+		t, err := read(o.EventID)
 		if err != nil {
 			return err
 		}
-		if task == nil {
+		if t == nil {
 			return ErrNotFound
 		}
-		var down *Task
-		if task.Type == Recovered {
-			down, err = redisTask(ctx, tx, s.outbox, eventID(task.IncidentID, Down, task.ChannelID))
-			if err != nil {
-				return err
-			}
-			if down == nil {
-				return ErrInvalid
-			}
-		}
-		var changed bool
-		result, changed, err = prepareOutcome(*task, down, o)
-		if err != nil || !changed {
-			return err
-		}
-		payload := make(map[string]any, 2)
-		if result.Type == Down && (result.Status == TaskFailed || result.Status == TaskSkipped) {
-			recovery, err := redisTask(ctx, tx, s.outbox, eventID(result.IncidentID, Recovered, result.ChannelID))
-			if err != nil {
-				return err
-			}
-			if recovery != nil {
-				skipped, err := skipRecovery(*recovery, &result)
-				if err != nil {
-					return err
-				}
-				data, err := json.Marshal(skipped)
-				if err != nil {
-					return err
-				}
-				payload[skipped.EventID] = data
-			}
-		}
-		data, err := json.Marshal(result)
+		i, err := redisIncident(ctx, tx, s.incidents, t.IncidentID)
 		if err != nil {
 			return err
 		}
-		payload[result.EventID] = data
+		if i == nil {
+			return ErrInvalid
+		}
+		var tasks []Task
+		result, tasks, err = outcomeTasks(*t, *i, o, read)
+		if err != nil {
+			return err
+		}
+		if tasks == nil {
+			return redisReadCommit(ctx, tx)
+		}
+		payload, err := taskPayload(tasks)
+		if err != nil {
+			return err
+		}
 		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error { p.HSet(ctx, s.outbox, payload); return nil })
 		return err
 	})
-	return result, err
+	return
+}
+
+// ListIncidents uses score-zero reverse lexicographic keyset pagination. Check
+// must have completed Schema v2 initialization; this query never migrates data.
+func (s *RedisStore) ListIncidents(ctx context.Context, q HistoryQuery) (page IncidentPage, err error) {
+	limit, anchor, err := historyQuery(q)
+	if err != nil {
+		return page, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		page = IncidentPage{}
+		maxKey := "+"
+		if anchor != "" {
+			maxKey = "(" + anchor
+		}
+		keys, e := tx.ZRevRangeByLex(ctx, s.history, &redis.ZRangeBy{Max: maxKey, Min: "-", Offset: 0, Count: int64(limit + 1)}).Result()
+		if e != nil {
+			return e
+		}
+		count, e := tx.ZCard(ctx, s.history).Result()
+		if e != nil {
+			return e
+		}
+		rows, e := tx.HLen(ctx, s.incidents).Result()
+		if e != nil {
+			return e
+		}
+		if count != rows {
+			return ErrInvalid
+		}
+		lastKey := ""
+		for _, key := range keys {
+			score, e := tx.ZScore(ctx, s.history, key).Result()
+			if e != nil {
+				return e
+			}
+			if score != 0 {
+				return ErrInvalid
+			}
+			id, e := historyID(key)
+			if e != nil {
+				return e
+			}
+			i, e := redisIncident(ctx, tx, s.incidents, id)
+			if e != nil {
+				return e
+			}
+			if indexedIncident(key, i) != nil {
+				return ErrInvalid
+			}
+			if len(page.Incidents) == limit {
+				page.NextCursor = historyCursor(lastKey)
+				break
+			}
+			page.Incidents = append(page.Incidents, *i)
+			lastKey = key
+		}
+		return redisReadCommit(ctx, tx)
+	})
+	if err != nil {
+		return IncidentPage{}, err
+	}
+	return
+}
+
+// ReadIncident validates its watched read set with EXEC, retrying concurrent
+// incident/outcome changes. It never initializes schema or scans the task hash.
+func (s *RedisStore) ReadIncident(ctx context.Context, q DetailQuery) (page IncidentDetail, err error) {
+	if err = q.Validate(); err != nil {
+		return page, err
+	}
+	err = s.watchReady(ctx, func(tx *redis.Tx) error {
+		page = IncidentDetail{}
+		i, e := redisIncident(ctx, tx, s.incidents, q.IncidentID)
+		if e != nil {
+			return e
+		}
+		page, e = readIncidentDetail(i, q, func(id string) (*Task, error) { return redisTask(ctx, tx, s.outbox, id) })
+		if e != nil {
+			return e
+		}
+		return redisReadCommit(ctx, tx)
+	})
+	if err != nil {
+		return IncidentDetail{}, err
+	}
+	return
 }
 
 // Outbox reads the task hash atomically and sorts by EventID, without delivery work.
 func (s *RedisStore) Outbox(ctx context.Context) ([]Task, error) {
+	if err := s.ensure(ctx); err != nil {
+		return nil, err
+	}
 	values, err := s.client.HGetAll(ctx, s.outbox).Result()
 	if err != nil {
 		return nil, err

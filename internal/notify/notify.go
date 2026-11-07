@@ -165,13 +165,18 @@ func validateMessage(m Message) error {
 	}
 	switch t.Type {
 	case alerts.Down:
-		if !t.OccurredAt.Equal(i.ConfirmedAt) {
+		if t.ReminderSequence != 0 || !t.OccurredAt.Equal(i.ConfirmedAt) {
 			return ErrInvalidMessage
 		}
 	case alerts.Recovered:
-		if i.RecoveredAt.IsZero() || !t.OccurredAt.Equal(i.RecoveredAt) {
+		if t.ReminderSequence != 0 || i.RecoveredAt.IsZero() || !t.OccurredAt.Equal(i.RecoveredAt) {
 			return ErrInvalidMessage
 		}
+	case alerts.Reminder:
+		if t.ValidateReminder(i) != nil || !i.RecoveredAt.IsZero() {
+			return ErrInvalidMessage
+		}
+		return nil
 	default:
 		return ErrInvalidMessage
 	}

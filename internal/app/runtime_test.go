@@ -430,6 +430,9 @@ type testAlertStore struct {
 func (s *testAlertStore) GetTask(ctx context.Context, id string) (*alerts.Task, error) {
 	return s.Store.(alerts.DeliveryStore).GetTask(ctx, id)
 }
+func (s *testAlertStore) ReadDelivery(ctx context.Context, id string, now time.Time) (*alerts.Task, *alerts.Incident, error) {
+	return s.Store.(alerts.DeliveryStore).ReadDelivery(ctx, id, now)
+}
 func (s *testAlertStore) QueryDue(ctx context.Context, q alerts.DueQuery) (alerts.TaskPage, error) {
 	return s.Store.(alerts.DeliveryStore).QueryDue(ctx, q)
 }

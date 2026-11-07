@@ -52,16 +52,17 @@ func (cfg WebhookConfig) destination() (*url.URL, error) {
 func (s *Webhook) CloseIdleConnections() { s.client.http.CloseIdleConnections() }
 
 type webhookPayload struct {
-	SchemaVersion  int              `json:"schema_version"`
-	EventID        string           `json:"event_id"`
-	IncidentID     string           `json:"incident_id"`
-	EventType      alerts.EventType `json:"event_type"`
-	EndpointID     string           `json:"endpoint_id"`
-	EndpointName   string           `json:"endpoint_name"`
-	OccurredAt     time.Time        `json:"occurred_at"`
-	FirstFailureAt time.Time        `json:"first_failure_at"`
-	ConfirmedAt    time.Time        `json:"confirmed_at"`
-	RecoveredAt    *time.Time       `json:"recovered_at,omitempty"`
+	SchemaVersion    int              `json:"schema_version"`
+	EventID          string           `json:"event_id"`
+	IncidentID       string           `json:"incident_id"`
+	EventType        alerts.EventType `json:"event_type"`
+	EndpointID       string           `json:"endpoint_id"`
+	EndpointName     string           `json:"endpoint_name"`
+	OccurredAt       time.Time        `json:"occurred_at"`
+	FirstFailureAt   time.Time        `json:"first_failure_at"`
+	ConfirmedAt      time.Time        `json:"confirmed_at"`
+	RecoveredAt      *time.Time       `json:"recovered_at,omitempty"`
+	ReminderSequence int              `json:"reminder_sequence,omitempty"`
 }
 
 // Send reports one attempt. Even for a now-closed incident, a delayed DOWN
@@ -75,6 +76,7 @@ func (s *Webhook) Send(ctx context.Context, m Message) (Result, error) {
 	}
 	i, t := m.Incident, m.Task
 	payload := webhookPayload{SchemaVersion: 1, EventID: t.EventID, IncidentID: i.ID, EventType: t.Type, EndpointID: i.EndpointID, EndpointName: displayName(m), OccurredAt: t.OccurredAt.UTC(), FirstFailureAt: i.FirstFailureAt.UTC(), ConfirmedAt: i.ConfirmedAt.UTC()}
+	payload.ReminderSequence = t.ReminderSequence
 	if t.Type == alerts.Recovered {
 		at := i.RecoveredAt.UTC()
 		payload.RecoveredAt = &at

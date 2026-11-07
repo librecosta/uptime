@@ -1,4 +1,4 @@
-# Alert Contract (v0.2.0-B1/B2/C1/C2/C3)
+# Alert Contract (v0.2.0 and v0.2.1)
 
 `internal/alerts` is an independent, observation-driven core. `internal/app`
 optionally feeds it upstream endpoint probe results. Alerts are disabled by
@@ -11,7 +11,10 @@ configuration and a single delivery worker. There is no management API.
 - HEALTHY -> PENDING on an actual failed observation; the third consecutive
   failure confirms FIRING by default. An explicit threshold must be 1 through 10.
   Threshold one confirms immediately. A successful observation resets PENDING.
-- Only real success closes FIRING and produces RECOVERED. Repeated failures in
+- FIRING closes only after `Policy.RecoverySuccesses` consecutive real successes
+  (zero selects one; explicit 1..10). YAML `alerts.recovery_successes` defaults
+  to one and accepts 1..10. Failures, any Gap and restart reset the in-memory
+  recovery count. Default behavior matches v0.2.0. Repeated failures in
   FIRING and repeated success after recovery create no additional transitions.
 - A Gap is a standalone signal, not a probe. Its success/status fields are
   ignored. It resets unconfirmed failure counts even if its timestamp is old,
@@ -65,20 +68,23 @@ configuration and a single delivery worker. There is no management API.
 ## Persistence and ownership
 
 - The bbolt database is independent of `uptime.db`: explicit path (recommended
-  `./data/alerts.db`), format `librecosta-uptime-alerts`, Schema v1. `meta/format`
-  is UTF-8, `meta/schema_version` is an eight-byte big-endian uint64 equal to 1.
-  Required buckets are `meta`, `incidents`, `active`, and `outbox`. Records use
+  `./data/alerts.db`), format `librecosta-uptime-alerts`, Schema v2. `meta/format`
+  is UTF-8, `meta/schema_version` is an eight-byte big-endian uint64 equal to 2.
+  Required buckets are `meta`, `incidents`, `active`, `outbox`, and
+  `incidents_by_time`. Records use
   JSON; the active bucket maps endpoint IDs to incident IDs.
 - Only a definitively newly created file is initialized. Existing empty, corrupt,
-  foreign, or unsupported-schema files are refused, never adopted, migrated,
-  repaired, or removed. File mode is 0600 and new parent mode is 0750. Operations
+  foreign, or unsupported-schema files are refused, never adopted, repaired or
+  removed. Recognized Schema v1 files migrate atomically as specified below.
+  File mode is 0600 and new parent mode is 0750. Operations
   validate metadata and accessed records. bbolt transactions provide locking and
   rollback across incident/index/tasks. Close is idempotent; callers stop use
   before closing. Contexts do not promise to interrupt file locking or disk I/O.
 - Redis borrows a caller-owned standalone `*redis.Client` in the selected database.
   The caller closes it after use. Construction performs no I/O. The caller supplies
-  a deployment prefix; only `<prefix>:alerts:v1:{incidents,active,outbox}` hashes
-  are accessed. These names are independent of Uptime's native key schema; no
+  a deployment prefix; `<prefix>:alerts:v1:{incidents,active,outbox,meta}` hashes
+  and the `history` sorted set are accessed. These names are independent of
+  Uptime's native key schema; no
   monitoring key, other namespace, or global reset operation is used.
 - Redis WATCH checks the incident, active index, key types, and task identities;
   MULTI/EXEC commits all changes. Type checks happen under WATCH because Redis
@@ -120,7 +126,7 @@ configuration and a single delivery worker. There is no management API.
 - Enabled bbolt alerts use `alerts.db` beside the selected monitoring file.
   Identical paths and existing file aliases are rejected, never shared or migrated.
   Redis alerts borrow the already-owned standalone client, database, and deployment
-  prefix. A read-only startup check rejects incompatible alert key types; transition
+  prefix. A startup migration/check rejects incompatible alert key types; transition
   validation remains transactional. No second client/pool is created for alerts.
 - Alert persistence and the worker are initialized before `uptime.New`, which may
   begin probing during construction. Alert initialization failures abort startup
@@ -139,16 +145,16 @@ configuration and a single delivery worker. There is no management API.
 ## Delivery persistence (C1)
 
 - `DeliveryStore` is separate from the incident `Store`: `GetTask(EventID)`,
-  `QueryDue(DueQuery)`, and `RecordOutcome(Outcome)`. Both existing backends
-  implement it. Nothing in C1 sends notifications, polls the outbox in a worker,
+  `ReadDelivery`, `QueryDue(DueQuery)`, and `RecordOutcome(Outcome)`. Both
+  existing backends implement it. Nothing in C1 sends notifications, polls the outbox in a worker,
   claims tasks, or determines the runtime channel policy.
 - Tasks have PENDING, SENT, FAILED, or SKIPPED status. Only PENDING can accept a
   new outcome; terminal states never reopen. Added JSON fields are `attempts`,
   `next_attempt_at`, `last_attempt_at`, `finished_at`, `last_error_code`,
   `last_attempt_id`, and `attempt_receipts`. Missing fields in B1/B2 PENDING
   records mean zero attempts, no receipts, and initially due at `occurred_at`.
-  This is additive JSON within the same alerts Schema v1, buckets and Redis
-  hashes, without rewriting old records on open. EventID and channel snapshots
+  Delivery fields remain additive JSON; Schema v2 migrates the history index
+  without rewriting old records. EventID and channel snapshots
   remain unchanged. Legacy `Outbox` still returns all tasks, now in all states.
   Compatibility is C1 reading old records; older binaries do not understand the
   new terminal delivery states.
@@ -190,7 +196,7 @@ configuration and a single delivery worker. There is no management API.
   an outcome plus dependent skip in one HSET inside MULTI/EXEC; recovery creation
   uses the existing incident transaction and watches the same hashes. Both event
   creation orders and racing writes therefore follow identical conditional rules.
-  No Redis keys, application TTLs, schemas, locks, or leases are added.
+  No delivery claims, application TTLs, locks or leases are added.
 - QueryDue requires explicit Now, a backend-specific opaque cursor, and Limit
   1..100. Each call evaluates at most Limit scanned records and returns at most
   Limit eligible tasks. Pages can be empty with a nonempty NextCursor; callers
@@ -324,14 +330,143 @@ configuration and a single delivery worker. There is no management API.
 Stop the process before copying bbolt files. Preserve `uptime.db` and its sibling
 `alerts.db` as one backup set whenever the latter exists, even with alerts now
 disabled. Restore both with service ownership and mode 0600; do not mix snapshots
-or leave a newer alert file beside restored monitoring history. Existing schemas
-are unchanged, and no migration, automatic backup or retention task is added.
+or leave a newer alert file beside restored monitoring history. The monitoring
+schema is unchanged; alert Schema v2 migration is described below.
+No automatic backup or retention task is added.
 Redis uses `<monitoring prefix>:alerts:v1:` in the configured database; Redis's
 own coordinated RDB/AOF backup must include monitoring and alert state together.
 External stop budgets must allow separate shutdown, drain and outcome-recording
 timeouts before storage closure. The deployment examples allow 45s for the default
 10s application timeout; uninterruptible I/O still cannot guarantee a hard bound.
 These in-process alerts cannot detect the monitor's complete process failure.
+
+## Recovery stability and durable reminders (v0.2.1)
+
+- Recovery counts are volatile, including while a persistent incident is FIRING.
+  Only reaching the success threshold requests the existing atomic recovery
+  transition; pending/uncertain transition reconciliation remains unchanged.
+- `Incident.ReminderPolicy` freezes a positive interval and maximum count.
+  Nil means disabled; legacy incidents have no schedule and never acquire one
+  implicitly. `ReminderCount` counts issued reminders, not sends. An active,
+  non-exhausted snapshot has `NextReminderAt`; recovery/exhaustion clears it.
+- Pure `PrepareReminder` accepts only a matching real failed observation at or
+  after the saved deadline. Success, Gap, a closed incident and exhausted/disabled
+  policies produce nothing. A long outage produces at most one reminder; the next
+  interval starts at the actual observation completion time, with no catch-up.
+  Each snapshotted channel gets a PENDING task with positive `ReminderSequence`.
+- Reminder EventID is SHA-256 of `IncidentID + NUL + "REMINDER" + NUL + decimal
+  sequence + NUL + ChannelID`, without padding. DOWN/RECOVERED IDs are unchanged;
+  their sequence remains zero. Generic JSON adds `reminder_sequence` only for a
+  reminder, using `occurred_at` as its event time. Feishu adds a sequence line;
+  the original DOWN/RECOVERED payloads are unchanged.
+- Pure `DeliveryReady`/`PrepareDeliveryOutcome` require a consistent incident and
+  same-channel dependency snapshot: DOWN must be SENT, reminder N waits for N-1
+  to become terminal (SENT/FAILED/SKIPPED), and recovery waits for the last issued
+  reminder. Missing/corrupt dependencies reject; failed DOWN cannot authorize a
+  reminder. Existing DOWN-failure recovery skips retain their v0.2.0 rules.
+- `CancelReminder` prepares recovery's cancellation of PENDING reminders,
+  including those with previous attempts. It uses SKIPPED/`incident_recovered`,
+  clears the retry time and preserves Attempts, LastAttemptAt/ID and every receipt.
+  FinishedAt is the later of recovery and the last attempt; no attempt is added.
+  Already terminal tasks are unchanged. This reason cannot be supplied as a send
+  Outcome. Both backends commit cancellation with recovery in the same transaction.
+- A completed send racing cancellation still attempts conditional recording.
+  On conflict, Worker reads the task and closed incident. A valid cancellation
+  with unchanged pre-send count releases its fence without claiming an outcome
+  receipt or overwriting SKIPPED. Unavailable, mismatched or invalid reads retain
+  the same Outcome/AttemptID for reconciliation and never authorize a resend.
+- YAML `alerts.reminder_interval: 0s` and `reminder_limit: 0` disable reminders.
+  Enabled reminders require an interval of 5 minutes through 30 days (`5m`..`720h`)
+  and a limit 1..10. This validation applies to new configuration only: snapshots
+  previously persisted on develop (including 1s intervals and limits up to 100)
+  remain readable and keep their frozen policy. Inactive alerts do not
+  resolve reminder environment variables. Config check never opens or migrates data.
+- New DOWN freezes the configured policy and initial deadline. Existing incidents
+  retain their snapshot, including nil for pre-upgrade incidents. Engine uses
+  `ApplyReminder(IncidentID, ExpectedCount, CheckedAt)` only after a real failed
+  FIRING observation. Counter, next deadline and per-channel tasks commit together.
+  Read-back verifies fixed sequence IDs and occurrence time after uncertain commits;
+  retries cannot skip a sequence. No catch-up loop, timer or second worker exists.
+- Final DOWN failure atomically skips all same-channel PENDING reminders/recovery,
+  including tasks created later. Recovery atomically cancels all PENDING reminders.
+  Each task's ten-attempt budget is independent of its reminder sequence.
+- QueryDue is advisory. `ReadDelivery` rechecks task, incident and predecessor in a
+  consistent read immediately before Send; RecordOutcome checks again atomically.
+  Recovery cannot overwrite a recorded terminal task, and a late outcome cannot
+  overwrite a cancellation. An already in-flight HTTP message may still arrive late;
+  delivery remains at least once, not an exactly-once or network cancellation promise.
+
+## Alert Schema v2 migration and history
+
+- Stop all alert executors and back up before upgrading. With bbolt, preserve
+  uptime.db and alerts.db together while stopped. Redis backups must include the
+  complete configured monitoring/alert namespace using the operator's RDB/AOF plan.
+  Start one upgraded executor only. There is no rolling multi-version migration.
+- New bbolt files start at v2. A recognized v1 file validates incidents, active
+  references and all tasks/receipts, backfills `incidents_by_time` and writes v2 in
+  one Update. Failure rolls back the index and version; original JSON is unchanged.
+  No change is made to uptime.db. Unknown versions/format/corruption are refused.
+- Redis retains its three hashes and `:alerts:v1:` key namespace. `meta` records
+  format, schema_version, state, phase, HSCAN cursor and batch offset; `history`
+  is a score-zero ZSET. Each batch validates at most 25 source records and commits
+  index/progress in one watched EXEC. Redis COUNT is a hint; oversized responses
+  resume by saved offset. Incident/active/outbox validation and index verification
+  complete before v2 Ready.
+  An interruption resumes on the next startup; repeated index writes are idempotent.
+  All five key types are checked under WATCH before writes, since EXEC does not
+  roll back command type errors. No new key has a TTL. Legacy JSON is not rewritten.
+- Migration is synchronous before workers/probing start, and uses the existing
+  Redis startup deadline. Large datasets may need another startup to resume saved
+  progress. Do not run old writers or downgrade in place after migration. To roll
+  back, stop the process and restore the complete pre-upgrade backup with the old
+  binary; never delete migration metadata/indexes or mix database snapshots.
+- `HistoryStore.ListIncidents` returns ConfirmedAt descending, then incident ID
+  descending. Limit defaults to 20 and is capped at 50. An opaque, versioned cursor
+  is an exclusive keyset anchor, bounded to 1024 bytes. Index keys are fixed UTC
+  nanosecond timestamps plus NUL plus hex-encoded ID (IDs at most 256 bytes).
+  bbolt traverses the time bucket backwards; Redis uses score-zero reverse BYLEX.
+  Neither loads/sorts the table. Redis history requires a completed Check/Ready
+  schema and never initiates migration from a query. Each returned row must match
+  its index; missing or
+  corrupt records are errors, never silently omitted. Pages are not a cross-call
+  snapshot. The optional read-only UI/API is specified below; no retention sweep or automatic cleanup exists.
+
+## Read-only alert history (v0.2.1-C)
+
+- `alerts.history_enabled` defaults false. Enabling it requires enabled alerts and
+  valid enabled Basic Auth; config check remains offline and never migrates data.
+  Disabled history registers no page/API, creates no connection and starts no worker.
+  Existing alert runtime storage is borrowed and remains owned by its original owner.
+  Fiber drains HTTP readers before alert workers/storage close.
+- `/alerts` (also `/alerts/`) serves an embedded Go HTML template with native
+  CSS/JS. Basic Auth protects the complete namespace, including HEAD, JSON, unknown
+  descendants and Fiber-normalized aliases. `auth.protect_uptime: false` never
+  publishes history or enabled Monitor. Health/root redirect behavior is unchanged.
+  All history responses prohibit caching. Template escaping, text-only DOM updates,
+  per-response CSP nonces and no external assets protect endpoint display names.
+- GET/HEAD `/alerts/api/incidents` uses `HistoryStore.ListIncidents` directly.
+  `limit` defaults 20, range 1..50; `cursor` is the B2 exclusive time/ID keyset.
+  Unknown/duplicate/empty parameters, noncanonical limits and malformed cursors
+  return safe 400 errors. Missing incident detail returns 404; unreadable/corrupt
+  persistence returns a fixed 503, never a raw storage error or partial page.
+- GET/HEAD `/alerts/api/incidents/:id` uses `HistoryStore.ReadIncident` and the same
+  limit bounds. IDs use 1..256 ASCII letters/digits/`.`/`_`/`-`, starting with a letter/digit. Detail cursors are
+  bounded, canonical and bound to the incident ID. Tasks are derived in event-major
+  order (DOWN, issued reminders, then recovery), with frozen sorted channels within
+  each event. Read only the requested tasks, at most 50, without Outbox/HGETALL or
+  additional indexes. Missing/corrupt expected tasks fail the page, never disappear.
+- Each detail page reads incident/tasks in one bbolt View or validated Redis WATCH
+  read-only EXEC. Concurrent recovery/outcomes retry the Redis snapshot. No schema,
+  key, migration or persistent value is changed. Separate pages/refreshes may see
+  later updates; pagination is not a reservation or cross-request snapshot.
+- API projections contain only incident/endpoint identities, current display name
+  (saved endpoint ID when removed), state/times, duration/reminder count and safe
+  task delivery fields. No configuration, URLs, credentials, raw errors, attempt
+  IDs or receipts are exposed. Times are UTC; duration starts at first failure and
+  ends at recovery, or request time while FIRING. Refresh updates the snapshot.
+- There are no write methods, ACK, resend, deletion, config editing, retention or
+  background cleanup actions. Delivery ownership/at-least-once guarantees remain
+  unchanged.
 
 ## Boundary and verification
 
