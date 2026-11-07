@@ -172,10 +172,13 @@ func (d *deliveryWorker) scan(ctx context.Context) {
 
 func (d *deliveryWorker) deliver(ctx context.Context, candidate alerts.Task) {
 	opCtx, cancel := context.WithTimeout(ctx, d.opTimeout)
-	task, err := d.store.GetTask(opCtx, candidate.EventID)
+	task, incident, err := d.store.ReadDelivery(opCtx, candidate.EventID, d.now())
 	cancel()
-	if err != nil || task == nil {
+	if err != nil {
 		d.report(candidate.EventID, candidate.ChannelID, alerts.ErrorUnavailable)
+		return
+	}
+	if task == nil {
 		return
 	}
 	// HSCAN can repeat records, and a resumed page can contain stale tasks.
@@ -189,13 +192,6 @@ func (d *deliveryWorker) deliver(ctx context.Context, candidate alerts.Task) {
 	}
 	bot := d.botKeys[task.ChannelID]
 	if bot != "" && d.now().Before(d.nextBotSend[bot]) {
-		return
-	}
-	opCtx, cancel = context.WithTimeout(ctx, d.opTimeout)
-	incident, err := d.incidents.Get(opCtx, task.IncidentID)
-	cancel()
-	if err != nil || incident == nil {
-		d.report(task.EventID, task.ChannelID, alerts.ErrorUnavailable)
 		return
 	}
 	if ctx.Err() != nil {
@@ -239,9 +235,22 @@ func (d *deliveryWorker) record() bool {
 	}
 	task, err := d.store.GetTask(ctx, o.EventID)
 	if err == nil && task != nil {
-		if matched, err := task.HasOutcome(o); err == nil && matched {
+		matched, receiptErr := task.HasOutcome(o)
+		if receiptErr == nil && matched {
 			d.pending = nil
 			return true
+		}
+		if receiptErr == nil && task.Type == alerts.Reminder && task.Status == alerts.TaskSkipped && task.LastErrorCode == alerts.ErrorIncidentRecovered {
+			// Recovery may cancel an in-flight reminder without recording its send.
+			// Prove the closed incident and unchanged history before releasing the
+			// fence; an unavailable/mismatched read still leaves the outcome unknown.
+			incident, err := d.incidents.Get(ctx, task.IncidentID)
+			if err == nil && incident != nil {
+				if canceled, err := task.CanceledByRecovery(*incident, o); err == nil && canceled {
+					d.pending = nil
+					return true
+				}
+			}
 		}
 	}
 	d.report(o.EventID, d.pendingChannel, alerts.ErrorUnavailable)

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alert history · LibreCosta Uptime</title>
+<style nonce="{{.Nonce}}">
+:root{color-scheme:light dark;--bg:#f4f7fa;--panel:#fff;--ink:#172b3e;--muted:#526779;--line:#d9e3eb;--accent:#087d8f;--red:#ac304d;--green:#16734c;--soft:#edf4f7}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0b1420;--panel:#101f2d;--ink:#e0eaf2;--muted:#9bb0c3;--line:#2a3e50;--accent:#58cbd7;--red:#ff879b;--green:#72d7ab;--soft:#182c3c}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#0b1420;--panel:#101f2d;--ink:#e0eaf2;--muted:#9bb0c3;--line:#2a3e50;--accent:#58cbd7;--red:#ff879b;--green:#72d7ab;--soft:#182c3c}
+:root[data-theme=light]{color-scheme:light}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:28px 24px 48px}header,nav,.toolbar,.pager{display:flex;align-items:center;gap:18px;flex-wrap:wrap}header{justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:18px}nav{gap:16px}a{color:var(--accent);text-underline-offset:4px}header strong{font-size:16px}h1{font-size:30px;letter-spacing:-.7px;margin:30px 0 6px}p{margin:8px 0;color:var(--muted)}.toolbar{justify-content:space-between;margin-bottom:24px}.note{font-size:13px}.history{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}.labels,.summary{display:grid;grid-template-columns:minmax(180px,1.6fr) 118px minmax(160px,1fr) minmax(160px,1fr) 105px 70px;gap:14px;align-items:center;padding:16px 20px}.labels{background:var(--soft);font-size:12px;color:var(--muted)}.incident+.incident{border-top:1px solid var(--line)}.summary time{font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.endpoint{min-width:0}.endpoint strong{display:block;overflow-wrap:anywhere}.id{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.badge{display:inline-block;font-size:11px;font-weight:700;border:1px solid var(--line);border-radius:5px;padding:3px 7px;white-space:nowrap}.firing,.failed{color:var(--red)}.recovered,.sent{color:var(--green)}.pending{color:var(--accent)}.skipped{color:var(--muted)}button,select,.button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px;cursor:pointer;text-decoration:none}button:hover,.button:hover{border-color:var(--accent)}button:disabled{opacity:.6;cursor:wait}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.expand{text-align:left;border:0;background:none;padding:0;color:var(--accent);font-weight:650}.expand::before{content:"＋ ";font-weight:400}.expand[aria-expanded=true]::before{content:"− "}.details{border-top:1px solid var(--line);padding:18px 20px;background:var(--soft)}[hidden]{display:none!important}.table-scroll{max-width:100%;overflow:auto}table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}th,td{padding:10px 12px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}td{min-width:100px;overflow-wrap:anywhere}td time{white-space:nowrap}.task-id{font-size:10px;max-width:220px}.feedback,.empty{padding:32px 20px}.feedback{border-left:3px solid var(--red);background:var(--panel)}.pager{justify-content:flex-end;margin-top:20px}.pager span{margin-right:auto}.mobile-label{display:none}.detail-message{margin:0 0 12px}.more{margin-top:12px}.details h2{font-size:14px;margin:0 0 4px}
+@media(max-width:1000px){.labels{display:none}.summary{grid-template-columns:minmax(170px,1fr) 118px;gap:14px}.endpoint{grid-column:1}.mobile-label{display:block;font-size:11px;color:var(--muted)}.summary>div{min-width:0}.summary time{font-size:13px}}@media(max-width:540px){main{padding:18px 12px 32px}header{align-items:flex-start;gap:12px}header strong{width:100%}h1{font-size:26px;margin-top:24px}.summary{padding:16px 14px;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.details{padding:16px 14px}nav{gap:12px}select{max-width:115px}}
+</style>
+</head>
+<body><main>
+<header><strong>LibreCosta Uptime</strong><nav aria-label="Dashboards"><a href="{{.UptimePath}}">Uptime</a>{{if .Monitor}}<a href="/monitor">Monitor</a>{{end}}<span aria-current="page">Alert history</span></nav><label class="note">Theme <select id="theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></header>
+<h1>Alert history</h1><div class="toolbar"><p>Confirmed incidents and notification delivery.</p><a class="button" href="/alerts">Refresh history</a></div>
+{{if .Message}}<div class="feedback" role="alert">{{.Message}}</div>{{else}}
+<section class="history" aria-label="Incidents">
+<div class="labels" aria-hidden="true"><span>Endpoint</span><span>Status</span><span>Confirmed (UTC)</span><span>Recovered (UTC)</span><span>Duration</span><span>Reminders</span></div>
+{{range .Rows}}
+<article class="incident">
+<div class="summary"><div class="endpoint"><strong><button class="expand" aria-expanded="false" data-incident="{{.ID}}">{{.Name}}</button></strong><div class="id">{{.EndpointID}}</div></div><div><span class="badge {{if eq .Status "FIRING"}}firing{{else}}recovered{{end}}">{{.Status}}</span></div><div><span class="mobile-label">Confirmed (UTC)</span><time>{{utc .ConfirmedAt}}</time></div><div><span class="mobile-label">Recovered (UTC)</span><time>{{utc .RecoveredAt}}</time></div><div><span class="mobile-label">Duration</span>{{duration .DurationSeconds}}</div><div><span class="mobile-label">Reminders</span>{{.ReminderCount}}</div></div>
+<div class="details" hidden></div></article>
+{{else}}<div class="empty"><strong>No incidents recorded.</strong><p>Confirmed failures will appear here. Pending failure counts are not incidents.</p></div>{{end}}
+</section><div class="pager"><span class="note">Times are UTC. Duration starts at the first failure.</span>{{if .NextCursor}}<a class="button" href="/alerts?cursor={{.NextCursor}}">Older incidents</a>{{end}}</div>{{end}}
+<p class="note">Read-only history. Refresh for current state; separate pages may reflect later updates.</p><noscript><p>Enable JavaScript to expand notification details. Incident browsing works without it.</p></noscript>
+</main>
+<script nonce="{{.Nonce}}">
+'use strict';
+document.getElementById('theme').addEventListener('change',e=>{document.documentElement.dataset.theme=e.target.value;});
+const date=value=>value ? new Date(value).toISOString().replace('.000Z','Z') : '—';
+const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+document.querySelectorAll('.expand').forEach(button=>{
+ const panel=button.closest('.incident').querySelector('.details');
+ let loaded=false,cursor='',body,more,message;
+ async function load(){
+  more.disabled=true;message.textContent='Loading delivery details…';
+  try{
+   const url='/alerts/api/incidents/'+encodeURIComponent(button.dataset.incident)+(cursor?'?cursor='+encodeURIComponent(cursor):'');
+   const response=await fetch(url,{headers:{Accept:'application/json'},cache:'no-store',credentials:'same-origin'});
+   if(!response.ok)throw new Error();
+   const data=await response.json();
+   data.tasks.forEach(task=>{
+    const row=node('tr');const channel=node('td',task.channel_id);channel.append(node('div',task.type+(task.reminder_sequence?' #'+task.reminder_sequence:'')));row.append(channel);
+    const state=node('td'),badge=node('span',task.status);badge.className='badge '+task.status.toLowerCase();state.append(badge);row.append(state);
+    [task.attempts,date(task.occurred_at),date(task.last_attempt_at),date(task.next_attempt_at),task.last_error_code||'—'].forEach(value=>row.append(node('td',value)));
+    const identity=node('td',task.event_id);identity.className='task-id';row.append(identity);body.append(row);
+   });
+   cursor=data.next_cursor;loaded=true;more.hidden=!cursor;
+   message.textContent='Snapshot: '+data.incident.status+' · '+data.incident.reminder_count+' reminders. '+(body.rows.length?'':'No notification channels for this incident.');
+   more.textContent='More delivery tasks';
+  }catch{message.textContent='Delivery details could not be read. Try again.';more.hidden=false;more.textContent='Retry loading details';}
+  finally{more.disabled=false;}
+ }
+ button.addEventListener('click',()=>{
+  const open=button.getAttribute('aria-expanded')!=='true';button.setAttribute('aria-expanded',String(open));panel.hidden=!open;
+  if(!open||loaded||more)return;
+  panel.append(node('h2','Notification delivery'),node('p','Incident '+button.dataset.incident));
+  message=node('p');message.className='detail-message note';message.setAttribute('role','status');panel.append(message);
+  const scroll=node('div');scroll.className='table-scroll';const table=node('table'),head=node('thead'),labels=node('tr');
+  ['Channel / event','Status','Attempts','Occurred (UTC)','Last attempt (UTC)','Next retry (UTC)','Error code','Event ID'].forEach(label=>{const th=node('th',label);th.scope='col';labels.append(th);});
+  head.append(labels);body=node('tbody');table.append(head,body);scroll.append(table);panel.append(scroll);
+  more=node('button','More delivery tasks');more.className='more';more.addEventListener('click',load);panel.append(more);load();
+ });
+});
+</script></body></html>

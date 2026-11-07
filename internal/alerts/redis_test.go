@@ -3,7 +3,9 @@ package alerts
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -34,7 +36,7 @@ func alertRedis(t *testing.T) (*RedisStore, *redis.Client) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		// Every key created by this fixture is known; no scan or global reset.
-		must(t, client.Del(ctx, s.incidents, s.active, s.outbox, prefix+":monitor").Err())
+		must(t, client.Del(ctx, s.incidents, s.active, s.outbox, s.history, s.meta, prefix+":monitor").Err())
 		must(t, client.Close())
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -42,6 +44,7 @@ func alertRedis(t *testing.T) (*RedisStore, *redis.Client) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatal("Redis integration instance unavailable")
 	}
+	must(t, s.Check(ctx))
 	return s, client
 }
 
@@ -119,7 +122,10 @@ func TestRedisIntegrationAlertsAtomicFailure(t *testing.T) {
 	}
 }
 
-type lostExecReply struct{ fail atomic.Bool }
+type lostExecReply struct {
+	fail    atomic.Bool
+	command string
+}
 
 // Force another executor to recover between the incident and active-index reads.
 // The losing reader must revalidate WATCH rather than report a false conflict.
@@ -181,7 +187,11 @@ func (h *lostExecReply) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 	return func(ctx context.Context, commands []redis.Cmder) error {
 		err := next(ctx, commands)
 		for _, command := range commands {
-			if command.Name() == "hset" && err == nil && h.fail.CompareAndSwap(true, false) {
+			target := h.command
+			if target == "" {
+				target = "hset"
+			}
+			if command.Name() == target && err == nil && h.fail.CompareAndSwap(true, false) {
 				return errInjected
 			}
 		}
@@ -313,5 +323,304 @@ func TestRedisIntegrationDeliveryAtomicFailure(t *testing.T) {
 	}
 	if task := readTask(t, s, i, Down, "a"); task.Attempts != 0 || task.Status != TaskPending {
 		t.Fatal("partial Redis outcome")
+	}
+}
+
+func TestRedisIntegrationReminders(t *testing.T) { s, _ := alertRedis(t); exerciseReminders(t, s) }
+func TestRedisIntegrationReminderRace(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseReminderRace(t, s)
+}
+func TestRedisIntegrationHistory(t *testing.T) { s, _ := alertRedis(t); exerciseHistory(t, s) }
+func TestRedisIntegrationReminderEngine(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseReminderEngine(t, s)
+}
+
+// Force a legal oversized HSCAN response to exercise persisted batch offsets.
+type migrationBatchReplyLoss struct {
+	lostExecReply
+	incidents string
+}
+
+func (h *migrationBatchReplyLoss) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		args := cmd.Args()
+		if cmd.Name() == "hscan" && len(args) > 2 && args[1] == h.incidents {
+			for n := 2; n+1 < len(args); n++ {
+				if args[n] == "count" {
+					args[n+1] = int64(1000)
+					break
+				}
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestRedisIntegrationV1MigrationResume(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := t.Context()
+	i := testIncident("legacy-migrate", "old")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	down := readTask(t, s, i, Down, "a")
+	before, err := s.RecordOutcome(ctx, deliveryOutcome(down, TaskPending, i.ConfirmedAt))
+	must(t, err)
+	for n := range 60 {
+		old := testIncident(fmt.Sprintf("legacy-%02d", n), fmt.Sprintf("retired-%02d", n))
+		old.ChannelIDs = nil
+		old.RecoveredAt = old.ConfirmedAt.Add(time.Second)
+		data, err := json.Marshal(old)
+		must(t, err)
+		must(t, client.HSet(ctx, s.incidents, old.ID, data).Err())
+	}
+	must(t, client.Del(ctx, s.meta, s.history).Err()) // Only owned test keys, emulating v1.
+	reopened, err := NewRedisStore(client, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	hook := &migrationBatchReplyLoss{lostExecReply: lostExecReply{command: "zadd"}, incidents: s.incidents}
+	client.AddHook(hook)
+	hook.fail.Store(true)
+	if err := reopened.Check(ctx); !errors.Is(err, errInjected) {
+		t.Fatal("migration interruption not exercised")
+	}
+	if state, err := client.HGet(ctx, s.meta, "state").Result(); err != nil || state != "migrating" {
+		t.Fatal("premature ready mark")
+	}
+	count, err := client.ZCard(ctx, s.history).Result()
+	must(t, err)
+	if count != 25 {
+		t.Fatal("index batch was not committed before interruption")
+	}
+	offset, err := client.HGet(ctx, s.meta, "offset").Result()
+	must(t, err)
+	if offset != "25" {
+		t.Fatal("oversized batch progress not saved")
+	}
+	// Simulate process restart after a persisted batch and lost response.
+	reopened, err = NewRedisStore(client, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	must(t, reopened.Check(ctx))
+	after, err := reopened.GetTask(ctx, before.EventID)
+	must(t, err)
+	b1, _ := json.Marshal(before)
+	b2, _ := json.Marshal(after)
+	if string(b1) != string(b2) {
+		t.Fatal("migration changed task history")
+	}
+	page, err := reopened.ListIncidents(ctx, HistoryQuery{})
+	must(t, err)
+	if len(page.Incidents) != 20 || page.Incidents[0].ReminderPolicy != nil {
+		t.Fatal("migration changed legacy policy")
+	}
+	count, err = client.ZCard(ctx, s.history).Result()
+	must(t, err)
+	if count != 61 {
+		t.Fatal("resumed migration lost index rows")
+	}
+	for _, key := range []string{s.incidents, s.outbox, s.history, s.meta} {
+		ttl, err := client.TTL(ctx, key).Result()
+		must(t, err)
+		if ttl != -1 {
+			t.Fatal("migration introduced TTL")
+		}
+	}
+}
+func TestRedisIntegrationReminderUncertainCommit(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := t.Context()
+	i := reminderFixture()
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	hook := &lostExecReply{}
+	client.AddHook(hook)
+	hook.fail.Store(true)
+	e, err := NewEngine(s, nil)
+	must(t, err)
+	_, err = e.Observe(ctx, Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt}, Policy{})
+	must(t, err)
+	stored, err := s.Get(ctx, i.ID)
+	must(t, err)
+	if stored.ReminderCount != 1 {
+		t.Fatal("lost reply not reconciled")
+	}
+	// Replaying the exact conditional operation after restart is idempotent.
+	_, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 0, i.NextReminderAt})
+	must(t, err)
+	tasks, err := s.Outbox(ctx)
+	must(t, err)
+	if len(tasks) != 4 {
+		t.Fatal("lost reply duplicated sequence")
+	}
+}
+func TestRedisIntegrationMigrationRejectsCorruption(t *testing.T) {
+	for _, kind := range []string{"incident", "outbox", "active", "history-type", "meta-type", "future"} {
+		t.Run(kind, func(t *testing.T) {
+			s, client := alertRedis(t)
+			ctx := t.Context()
+			i := testIncident("bad-migration", "old")
+			_, err := s.Apply(ctx, Transition{Down, i})
+			must(t, err)
+			must(t, client.Del(ctx, s.meta, s.history).Err())
+			switch kind {
+			case "incident":
+				must(t, client.HSet(ctx, s.incidents, i.ID, "bad").Err())
+			case "outbox":
+				must(t, client.HSet(ctx, s.outbox, eventID(i.ID, Down, "a"), "bad").Err())
+			case "active":
+				must(t, client.HSet(ctx, s.active, "orphan", "missing").Err())
+			case "history-type":
+				must(t, client.Set(ctx, s.history, "foreign", 0).Err())
+			case "meta-type":
+				must(t, client.Set(ctx, s.meta, "foreign", 0).Err())
+			case "future":
+				must(t, client.HSet(ctx, s.meta, "format", alertFormat, "schema_version", "3", "state", "ready", "phase", "done", "cursor", "0").Err())
+			}
+			fresh, err := NewRedisStore(client, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+			must(t, err)
+			if err := fresh.Check(ctx); !errors.Is(err, ErrInvalid) {
+				t.Fatal("invalid migration accepted")
+			}
+		})
+	}
+}
+
+func TestRedisIntegrationReminderKeyTypeAtomicity(t *testing.T) {
+	for _, which := range []string{"history", "meta"} {
+		t.Run(which, func(t *testing.T) {
+			s, client := alertRedis(t)
+			ctx := t.Context()
+			i := reminderFixture()
+			_, err := s.Apply(ctx, Transition{Down, i})
+			must(t, err)
+			key := s.history
+			if which == "meta" {
+				key = s.meta
+			}
+			must(t, client.Del(ctx, key).Err())
+			must(t, client.Set(ctx, key, "foreign", 0).Err())
+			if _, err := s.ApplyReminder(ctx, ReminderChange{i.ID, 0, i.NextReminderAt}); !errors.Is(err, ErrInvalid) {
+				t.Fatal("wrong type accepted")
+			}
+			stored, err := s.Get(ctx, i.ID)
+			must(t, err)
+			if stored.ReminderCount != 0 {
+				t.Fatal("partial counter after wrong type")
+			}
+			id, _ := ReminderEventID(i.ID, 1, "a")
+			task, err := s.GetTask(ctx, id)
+			must(t, err)
+			if task != nil {
+				t.Fatal("partial task after wrong type")
+			}
+			value, err := client.Get(ctx, key).Result()
+			must(t, err)
+			if value != "foreign" {
+				t.Fatal("replaced foreign key")
+			}
+		})
+	}
+}
+func TestRedisIntegrationHistoryCorruption(t *testing.T) {
+	for _, which := range []string{"missing", "score", "time"} {
+		t.Run(which, func(t *testing.T) {
+			s, client := alertRedis(t)
+			ctx := t.Context()
+			i := testIncident("corrupt-history", "api")
+			_, err := s.Apply(ctx, Transition{Down, i})
+			must(t, err)
+			key, err := historyKey(i)
+			must(t, err)
+			switch which {
+			case "missing":
+				must(t, client.HDel(ctx, s.incidents, i.ID).Err())
+			case "score":
+				must(t, client.ZAdd(ctx, s.history, redis.Z{Member: key, Score: 1}).Err())
+			case "time":
+				i.ConfirmedAt = i.ConfirmedAt.Add(time.Second)
+				b, _ := json.Marshal(i)
+				must(t, client.HSet(ctx, s.incidents, i.ID, b).Err())
+			}
+			if _, err := s.ListIncidents(ctx, HistoryQuery{}); !errors.Is(err, ErrInvalid) {
+				t.Fatal("corrupt history silently skipped")
+			}
+		})
+	}
+}
+
+func TestRedisIntegrationRefusesMissingRuntimeIndex(t *testing.T) {
+	s, client := alertRedis(t)
+	i := reminderFixture()
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	key, err := historyKey(i)
+	must(t, err)
+	must(t, client.ZRem(t.Context(), s.history, key).Err())
+	if _, err = s.ApplyReminder(t.Context(), ReminderChange{i.ID, 0, i.NextReminderAt}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("runtime repaired missing history index")
+	}
+	stored, err := s.Get(t.Context(), i.ID)
+	must(t, err)
+	if stored.ReminderCount != 0 {
+		t.Fatal("partial count on index failure")
+	}
+}
+
+func TestRedisIntegrationHistoryDoesNotMigrate(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := t.Context()
+	must(t, client.Del(ctx, s.meta, s.history).Err())
+	legacy, err := NewRedisStore(client, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	if _, err = legacy.ListIncidents(ctx, HistoryQuery{}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("history accepted uninitialized schema")
+	}
+	count, err := client.Exists(ctx, s.meta, s.history).Result()
+	must(t, err)
+	if count != 0 {
+		t.Fatal("read-only history query performed migration")
+	}
+	must(t, legacy.Check(ctx))
+	_, err = legacy.ListIncidents(ctx, HistoryQuery{})
+	must(t, err)
+}
+
+func TestRedisIntegrationIncidentDetails(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseIncidentDetails(t, s)
+}
+func TestRedisIntegrationIncidentDetailRace(t *testing.T) {
+	s, _ := alertRedis(t)
+	exerciseDetailRecoveryRace(t, s)
+}
+func TestRedisIntegrationIncidentDetailCorruption(t *testing.T) {
+	s, client := alertRedis(t)
+	i := testIncident("detail-corrupt", "detail-corrupt")
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, client.HDel(t.Context(), s.outbox, eventID(i.ID, Down, "a")).Err())
+	if page, err := s.ReadIncident(t.Context(), DetailQuery{IncidentID: i.ID}); !errors.Is(err, ErrInvalid) || len(page.Tasks) != 0 {
+		t.Fatal("missing task silently omitted")
+	}
+}
+
+func TestRedisIntegrationIncidentDetailTornRead(t *testing.T) {
+	s, client := alertRedis(t)
+	ctx := t.Context()
+	i := testIncident("detail-interleaved", "detail-interleaved")
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	options := *client.Options()
+	otherClient := redis.NewClient(&options)
+	defer otherClient.Close()
+	other, err := NewRedisStore(otherClient, strings.TrimSuffix(s.incidents, ":alerts:v1:incidents"))
+	must(t, err)
+	i.RecoveredAt = i.ConfirmedAt.Add(time.Minute)
+	hook := &interleavedRecovery{activeKey: s.outbox, recover: func() error { _, err := other.Apply(ctx, Transition{Recovered, i}); return err }}
+	client.AddHook(hook)
+	page, err := s.ReadIncident(ctx, DetailQuery{IncidentID: i.ID})
+	must(t, err)
+	if !hook.once.Load() || page.Incident.RecoveredAt.IsZero() || len(page.Tasks) != 4 {
+		t.Fatal("detail did not retry invalidated snapshot")
 	}
 }

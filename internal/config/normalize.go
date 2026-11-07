@@ -155,17 +155,48 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		}
 	}
 
-	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures}
+	cfg.Alerts = AlertsConfig{Enabled: raw.Alerts.Enabled, HistoryEnabled: raw.Alerts.HistoryEnabled, ConsecutiveFailures: *raw.Alerts.ConsecutiveFailures, RecoverySuccesses: *raw.Alerts.RecoverySuccesses}
 	if cfg.Alerts.ConsecutiveFailures < 1 || cfg.Alerts.ConsecutiveFailures > 10 {
 		n.fail("alerts.consecutive_failures", "expected an integer from 1 through 10")
 	}
+	if cfg.Alerts.RecoverySuccesses < 1 || cfg.Alerts.RecoverySuccesses > 10 {
+		n.fail("alerts.recovery_successes", "expected an integer from 1 through 10")
+	}
+	if cfg.Alerts.Enabled {
+		interval, err := time.ParseDuration(n.text("alerts.reminder_interval", raw.Alerts.ReminderInterval, true))
+		limit := *raw.Alerts.ReminderLimit
+		if err != nil || interval != 0 && (interval < 5*time.Minute || interval > 30*24*time.Hour) {
+			n.fail("alerts.reminder_interval", "expected zero or a duration from 5 minutes through 30 days")
+		} else if limit < 0 || limit > 10 || (interval == 0) != (limit == 0) {
+			n.fail("alerts.reminder_limit", "use zero with disabled reminders, otherwise 1 through 10")
+		} else {
+			cfg.Alerts.ReminderInterval, cfg.Alerts.ReminderLimit = interval, limit
+		}
+	}
 	channelIDs := n.alertChannels(raw, &cfg.Alerts)
+	cfg.Monitor.Enabled = raw.Monitor.Enabled
 
 	cfg.UI.Path = n.text("ui.path", raw.UI.Path, true)
 	if !strings.HasPrefix(cfg.UI.Path, "/") || cfg.UI.Path == "/" ||
 		path.Clean(cfg.UI.Path) != cfg.UI.Path || strings.ContainsAny(cfg.UI.Path, "?#\\\r\n") ||
 		cfg.UI.Path == "/livez" || cfg.UI.Path == "/readyz" {
 		n.fail("ui.path", "expected a clean absolute path without trailing slash or health-route collision")
+	}
+	// Check decoded aliases too: Fiber normalizes escapes/dot segments before
+	// middleware. Reserved namespaces must never become an alternate Uptime mount.
+	uiPath, err := url.PathUnescape(cfg.UI.Path)
+	if err != nil {
+		n.fail("ui.path", "invalid path escape")
+	} else {
+		uiPath = path.Clean(strings.ToLower(uiPath))
+		for _, reserved := range []string{"/alerts", "/monitor"} {
+			if reserved == "/monitor" && !cfg.Monitor.Enabled {
+				continue
+			}
+			if uiPath == reserved || strings.HasPrefix(uiPath, reserved+"/") || strings.HasPrefix(reserved, uiPath+"/") {
+				n.fail("ui.path", "overlaps a reserved dashboard namespace")
+			}
+		}
 	}
 	cfg.UI.Title = n.text("ui.title", raw.UI.Title, true)
 	cfg.UI.Description = n.text("ui.description", raw.UI.Description, true)
@@ -186,8 +217,9 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 
 	if raw.Auth.Enabled {
 		cfg.Auth = &BasicAuthConfig{
-			Username:     norm.NFC.String(n.text("auth.basic.username", raw.Auth.Basic.Username, true)),
-			PasswordHash: n.text("auth.basic.password_hash", raw.Auth.Basic.PasswordHash, true),
+			Username:      norm.NFC.String(n.text("auth.basic.username", raw.Auth.Basic.Username, true)),
+			PasswordHash:  n.text("auth.basic.password_hash", raw.Auth.Basic.PasswordHash, true),
+			ProtectUptime: *raw.Auth.ProtectUptime,
 		}
 		if strings.Contains(cfg.Auth.Username, ":") || strings.IndexFunc(cfg.Auth.Username, unicode.IsControl) >= 0 {
 			n.fail("auth.basic.username", "invalid Basic Auth username")
@@ -197,6 +229,12 @@ func normalize(raw rawConfig, lookup envLookup, maintenance bool) (Config, error
 		} else if _, err := bcrypt.Cost([]byte(cfg.Auth.PasswordHash)); err != nil {
 			n.fail("auth.basic.password_hash", "invalid bcrypt password hash")
 		}
+	}
+	if cfg.Monitor.Enabled && cfg.Auth == nil {
+		n.fail("monitor.enabled", "requires enabled Basic Auth with valid credentials")
+	}
+	if cfg.Alerts.HistoryEnabled && (!cfg.Alerts.Enabled || cfg.Auth == nil) {
+		n.fail("alerts.history_enabled", "requires enabled alerts and Basic Auth with valid credentials")
 	}
 	// Preserve the distinction between omission and an explicit empty sequence:
 	// maintenance may operate after the last endpoint is retired, but not on an

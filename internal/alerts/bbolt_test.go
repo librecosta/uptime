@@ -70,7 +70,7 @@ func TestBboltRefusesForeignSchema(t *testing.T) {
 					case "old":
 						return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 0))
 					case "future":
-						return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 2))
+						return meta.Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 3))
 					default:
 						return meta.Put([]byte("schema_version"), []byte{1})
 					}
@@ -201,7 +201,7 @@ func TestBboltDeliveryLegacyAndReopen(t *testing.T) {
 	if incident == nil || !sameIncident(*incident, i) || incident.RecoveredAt != i.RecoveredAt {
 		t.Fatal("delivery updates damaged legacy incident")
 	}
-	must(t, s.db.View(checkAlertSchema)) // Same identity, buckets, and Schema v1.
+	must(t, s.db.View(checkAlertSchema)) // Independent alert Schema v2; monitoring history is untouched.
 }
 
 func TestBboltDeliveryAtomicRollback(t *testing.T) {
@@ -248,5 +248,225 @@ func TestBboltDeliveryAtomicRollback(t *testing.T) {
 	}
 	if task, err := s.GetTask(ctx, eventID(other.ID, Recovered, "b")); err != nil || task != nil {
 		t.Fatal("partial recovery tasks")
+	}
+}
+
+// Downgrade only the test fixture's metadata/index to reproduce a real v1 file.
+func legacyBboltFixture(t *testing.T, corrupt bool) (string, Task) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "alerts.db")
+	s, err := OpenBbolt(path, time.Second)
+	must(t, err)
+	i := testIncident("migration-legacy", "old")
+	_, err = s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	down := readTask(t, s, i, Down, "a")
+	o := deliveryOutcome(down, TaskPending, i.ConfirmedAt)
+	task, err := s.RecordOutcome(t.Context(), o)
+	must(t, err)
+	closed := testIncident("migration-closed", "retired")
+	_, err = s.Apply(t.Context(), Transition{Down, closed})
+	must(t, err)
+	closed.RecoveredAt = closed.ConfirmedAt.Add(time.Minute)
+	_, err = s.Apply(t.Context(), Transition{Recovered, closed})
+	must(t, err)
+	must(t, s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket([]byte("incidents_by_time")); err != nil {
+			return err
+		}
+		if corrupt {
+			if err := tx.Bucket([]byte("outbox")).Put([]byte(eventID(i.ID, Down, "b")), []byte("bad")); err != nil {
+				return err
+			}
+		}
+		return tx.Bucket([]byte("meta")).Put([]byte("schema_version"), binary.BigEndian.AppendUint64(nil, 1))
+	}))
+	must(t, s.Close())
+	return path, task
+}
+func TestBboltV1Migration(t *testing.T) {
+	path, before := legacyBboltFixture(t, false)
+	s, err := OpenBbolt(path, time.Second)
+	must(t, err)
+	defer s.Close()
+	after, err := s.GetTask(t.Context(), before.EventID)
+	must(t, err)
+	b1, _ := json.Marshal(before)
+	b2, _ := json.Marshal(after)
+	if !bytes.Equal(b1, b2) {
+		t.Fatal("migration rewrote receipts or event identity")
+	}
+	page, err := s.ListIncidents(t.Context(), HistoryQuery{})
+	must(t, err)
+	if len(page.Incidents) != 2 || page.Incidents[0].ReminderPolicy != nil || page.Incidents[0].ReminderCount != 0 {
+		t.Fatal("legacy snapshot changed")
+	}
+	must(t, s.db.View(checkAlertSchema))
+}
+func TestBboltV1MigrationRollback(t *testing.T) {
+	path, _ := legacyBboltFixture(t, true)
+	if s, err := OpenBbolt(path, time.Second); err == nil {
+		s.Close()
+		t.Fatal("corrupt v1 migration accepted")
+	}
+	db, err := bolt.Open(path, 0600, nil)
+	must(t, err)
+	defer db.Close()
+	must(t, db.View(func(tx *bolt.Tx) error {
+		v, err := alertSchemaVersion(tx)
+		if err != nil {
+			return err
+		}
+		if v != 1 || tx.Bucket([]byte("incidents_by_time")) != nil {
+			t.Fatal("failed migration partially committed")
+		}
+		return nil
+	}))
+}
+func TestBboltReminderReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.db")
+	s, err := OpenBbolt(path, time.Second)
+	must(t, err)
+	i := reminderFixture()
+	_, err = s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	c := ReminderChange{i.ID, 0, i.NextReminderAt}
+	i, err = s.ApplyReminder(t.Context(), c)
+	must(t, err)
+	must(t, s.Close())
+	s, err = OpenBbolt(path, time.Second)
+	must(t, err)
+	defer s.Close()
+	e, err := NewEngine(s, nil)
+	must(t, err)
+	_, err = e.Observe(t.Context(), Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt}, Policy{})
+	must(t, err)
+	stored, err := s.Get(t.Context(), i.ID)
+	must(t, err)
+	if stored.ReminderCount != 2 {
+		t.Fatal("reminder state lost on reopen")
+	}
+	_, err = s.ApplyReminder(t.Context(), c)
+	must(t, err)
+}
+func TestBboltHistoryCorruption(t *testing.T) {
+	for _, kind := range []string{"missing", "time", "key"} {
+		t.Run(kind, func(t *testing.T) {
+			s := testBbolt(t)
+			i := testIncident("history-corrupt", "api")
+			_, err := s.Apply(t.Context(), Transition{Down, i})
+			must(t, err)
+			must(t, s.db.Update(func(tx *bolt.Tx) error {
+				if kind == "missing" {
+					return tx.Bucket([]byte("incidents")).Delete([]byte(i.ID))
+				}
+				if kind == "time" {
+					i.ConfirmedAt = i.ConfirmedAt.Add(time.Second)
+					b, _ := json.Marshal(i)
+					return tx.Bucket([]byte("incidents")).Put([]byte(i.ID), b)
+				}
+				return tx.Bucket([]byte("incidents_by_time")).Put([]byte("invalid"), []byte(i.ID))
+			}))
+			if _, err := s.ListIncidents(t.Context(), HistoryQuery{}); !errors.Is(err, ErrInvalid) {
+				t.Fatal("corrupt history silently skipped")
+			}
+		})
+	}
+}
+
+func TestBboltReminderAtomicRollback(t *testing.T) {
+	s := testBbolt(t)
+	ctx := t.Context()
+	i := reminderFixture()
+	_, err := s.Apply(ctx, Transition{Down, i})
+	must(t, err)
+	down := readTask(t, s, i, Down, "b")
+	bytesBefore, err := json.Marshal(down)
+	must(t, err)
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("outbox")).Put([]byte(down.EventID), []byte("bad")) }))
+	if _, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 0, i.NextReminderAt}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("corrupt dependency accepted")
+	}
+	stored, err := s.Get(ctx, i.ID)
+	must(t, err)
+	if stored.ReminderCount != 0 || !stored.NextReminderAt.Equal(i.NextReminderAt) {
+		t.Fatal("partial reminder counter")
+	}
+	id, _ := ReminderEventID(i.ID, 1, "a")
+	task, err := s.GetTask(ctx, id)
+	must(t, err)
+	if task != nil {
+		t.Fatal("partial reminder task")
+	}
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("outbox")).Put([]byte(down.EventID), bytesBefore) }))
+	i, err = s.ApplyReminder(ctx, ReminderChange{i.ID, 0, i.NextReminderAt})
+	must(t, err)
+	id, _ = ReminderEventID(i.ID, 1, "b")
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("outbox")).Put([]byte(id), []byte("bad")) }))
+	i.RecoveredAt = i.ConfirmedAt.Add(2 * time.Hour)
+	i.NextReminderAt = time.Time{}
+	if _, err = s.Apply(ctx, Transition{Recovered, i}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("corrupt cancellation accepted")
+	}
+	active, err := s.Active(ctx, i.EndpointID)
+	must(t, err)
+	if active == nil || !active.RecoveredAt.IsZero() {
+		t.Fatal("partial recovery")
+	}
+	first, err := s.GetTask(ctx, func() string { id, _ := ReminderEventID(i.ID, 1, "a"); return id }())
+	must(t, err)
+	if first.Status != TaskPending {
+		t.Fatal("partial reminder cancellation")
+	}
+}
+
+func TestBboltRefusesMissingRuntimeIndex(t *testing.T) {
+	s := testBbolt(t)
+	i := reminderFixture()
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	key, err := historyKey(i)
+	must(t, err)
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("incidents_by_time")).Delete([]byte(key)) }))
+	if _, err = s.ApplyReminder(t.Context(), ReminderChange{i.ID, 0, i.NextReminderAt}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("runtime repaired missing history index")
+	}
+	stored, err := s.Get(t.Context(), i.ID)
+	must(t, err)
+	if stored.ReminderCount != 0 {
+		t.Fatal("partial count on index failure")
+	}
+}
+
+func TestBboltReadsDevelopReminderSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.db")
+	s, err := OpenBbolt(path, time.Second)
+	must(t, err)
+	i := reminderFixture()
+	i.ReminderPolicy = &ReminderPolicy{Interval: time.Second, MaxReminders: 100}
+	i.NextReminderAt = i.ConfirmedAt.Add(time.Second)
+	_, err = s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, s.Close())
+	s, err = OpenBbolt(path, time.Second)
+	must(t, err)
+	defer s.Close()
+	old, err := s.Get(t.Context(), i.ID)
+	must(t, err)
+	if old == nil || !sameReminderPolicy(old.ReminderPolicy, i.ReminderPolicy) {
+		t.Fatal("new YAML limits rejected existing develop snapshot")
+	}
+	_, err = s.ApplyReminder(t.Context(), ReminderChange{i.ID, 0, i.NextReminderAt})
+	must(t, err)
+}
+
+func TestBboltIncidentDetailCorruption(t *testing.T) {
+	s := testBbolt(t)
+	i := testIncident("detail-corrupt", "detail-corrupt")
+	_, err := s.Apply(t.Context(), Transition{Down, i})
+	must(t, err)
+	must(t, s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("outbox")).Delete([]byte(eventID(i.ID, Down, "a"))) }))
+	if page, err := s.ReadIncident(t.Context(), DetailQuery{IncidentID: i.ID}); !errors.Is(err, ErrInvalid) || len(page.Tasks) != 0 {
+		t.Fatal("missing task silently omitted")
 	}
 }

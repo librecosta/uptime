@@ -109,7 +109,11 @@ func newAlertRuntime(store alerts.Store, closeStore func() error, cfg config.Con
 		done: make(chan struct{}), accepting: true, opTimeout: cfg.Server.ShutdownTimeout,
 	}
 	for _, endpoint := range cfg.Endpoints {
-		r.endpoints[endpoint.ID] = &alertIngressEndpoint{policy: alerts.Policy{FailureThreshold: cfg.Alerts.ConsecutiveFailures, ChannelIDs: append([]string(nil), endpoint.AlertChannels...)}}
+		var reminder *alerts.ReminderPolicy
+		if cfg.Alerts.ReminderInterval > 0 {
+			reminder = &alerts.ReminderPolicy{Interval: cfg.Alerts.ReminderInterval, MaxReminders: cfg.Alerts.ReminderLimit}
+		}
+		r.endpoints[endpoint.ID] = &alertIngressEndpoint{policy: alerts.Policy{FailureThreshold: cfg.Alerts.ConsecutiveFailures, RecoverySuccesses: cfg.Alerts.RecoverySuccesses, ReminderPolicy: reminder, ChannelIDs: append([]string(nil), endpoint.AlertChannels...)}}
 	}
 	// Probe cancellation must not discard a completed observation. This context
 	// belongs to the worker; stop supplies a separate deadline for draining it.

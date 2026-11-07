@@ -56,7 +56,7 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 
 - Work within this repository; do not depend on surrounding workspace content.
 - Stay Fiber-native, with a deliberately small dependency surface. Direct dependencies
-  are Fiber v3, Fiber Contrib Uptime, Fiber Storage Redis, go-redis, bbolt, and
+  are Fiber v3, Fiber Contrib Uptime/Monitor, Fiber Storage Redis, go-redis, bbolt, and
   stable YAML v3, x/crypto and x/text; keep their pinned versions.
 - Do not reimplement Fiber/Fiber Contrib Uptime behavior without a concrete product reason.
 - YAML is the user-facing configuration source of truth. Resolve and
@@ -66,7 +66,8 @@ conflict before changing behavior; do not silently rewrite a contract or design.
 - Never log or dump normalized configuration or include configured secret values in errors.
 - Active Basic Auth is bcrypt-only with an NFC-normalized username, without
   colon/control characters. Fiber owns credential parsing and verification;
-  health stays public and only the exact UI path and descendants require auth.
+  health stays public. Protect the UI namespace by default; publishing it also
+  publishes its status API. Enabled Monitor and reserved `/alerts` stay protected.
 - TLS wraps the tracked raw listener using the preloaded certificate and TLS 1.2
   minimum. Never reread certificates in Run, downgrade to HTTP, or bypass tracking.
 - `internal/app.New` performs no I/O. Single-use `Run` opens the selected storage,

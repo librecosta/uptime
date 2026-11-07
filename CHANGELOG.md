@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.2.1]
+
+### Added
+
+- Optional authenticated `/alerts` history page and read-only incident JSON APIs,
+  with UTC times, light/dark themes, bounded incident/task pagination and
+  per-channel delivery details. Disabled by default; shares existing alert storage
+  without schema changes or additional workers.
+- Optional native Fiber Contrib Monitor v1.2.4 dashboard and JSON snapshots at
+  `/monitor`, with authenticated access and HTTP statistics including recovered
+  5xx responses. Monitor requests do not count themselves; Monitor stays off
+  by default. The upstream system dependency retains its one-time initialization.
+- `auth.protect_uptime` (default true) allows public Uptime pages/status API while
+  keeping Monitor and alert history private. Both require enabled Basic Auth;
+  `/alerts` is reserved and conflicting UI paths are rejected.
+- Configurable consecutive recovery successes (1–10, default one), with volatile
+  counts reset by failure, observation gaps and restart.
+- Optional, durable REMINDER notifications driven only by real failed probes,
+  with frozen per-incident intervals/limits, stable sequence IDs, ordered delivery
+  and atomic recovery cancellation preserving attempt receipts.
+- Read-only indexed incident history with bounded keyset pagination. Alert bbolt
+  Schema v1 upgrades atomically to v2; Redis retains its namespace and resumes
+  bounded HSCAN index backfill before accepting runtime work. Legacy incidents
+  keep reminders disabled; monitoring Schema v1 and DOWN/RECOVERED IDs are unchanged.
+
+### Changed
+
+- Restrict new reminder configuration to 5 minutes through 30 days and 1–10
+  reminders, or zero/zero to disable. Existing persisted policies retain their
+  frozen schedule.
+
+## [v0.2.0]
+
 ### Added
 
 - Optional DOWN/RECOVERED alerts for HTTP/HTTPS endpoints, disabled by default,
@@ -16,19 +49,17 @@ All notable changes to this project will be documented in this file.
   capped exponential backoff (at most ten attempts), Retry-After, per-bot limits,
   restart recovery and uncertain-result reconciliation. At-least-once delivery
   can repeat messages; one alert executor is required per database/Redis prefix.
-- Prepared [v0.2.0 release notes](docs/releases/v0.2.0.md), paired monitoring/alert
-  database backup and restore examples, and a Docker smoke check for both files'
-  non-root ownership, private permissions and persistence.
+- Paired monitoring and alert database backup and restore instructions for
+  Docker and systemd.
 
 ### Changed
 
 - Allow separate shutdown/drain/recording phases in Docker/systemd stop budgets
   (45 seconds with the default application timeout); application defaults stay
-  unchanged. Existing monitoring Schema v1 and alert Schema v1 remain unchanged.
+  unchanged.
 - Validate Redis WATCH conditions before returning logical errors from interleaved
   reads; concurrent identical recoveries remain idempotent. Redis tests distinguish
   an absent empty active hash from keys that actually have expiry.
-
 - Pin Fiber Uptime to PR #2604's merged commit
   `2800b7917d0e3f1b9932718ff6a62277d3b8742d` for its optional probe-result hook,
   with only required module-graph upgrades; see `contracts/upstream.md`.

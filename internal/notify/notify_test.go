@@ -53,6 +53,88 @@ func checkResult(t *testing.T, got Result, err error, status alerts.TaskStatus, 
 	}
 }
 
+func TestReminderAdapters(t *testing.T) {
+	i := message(alerts.Down).Incident
+	i.ReminderPolicy = &alerts.ReminderPolicy{Interval: time.Minute, MaxReminders: 3}
+	i.NextReminderAt = i.ConfirmedAt.Add(time.Minute)
+	i, tasks, err := alerts.PrepareReminder(i, alerts.Observation{EndpointID: i.EndpointID, CheckedAt: i.NextReminderAt, StatusCode: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Message{Task: tasks[0], Incident: i, EndpointName: "Public API"}
+	for _, adapter := range []string{"webhook", "feishu"} {
+		t.Run(adapter, func(t *testing.T) {
+			var bodies [][]byte
+			rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body, _ := io.ReadAll(r.Body)
+				bodies = append(bodies, body)
+				if adapter == "webhook" && r.Header.Get("X-LibreCosta-Event-ID") != m.Task.EventID {
+					t.Error("reminder event header")
+				}
+				if adapter == "feishu" {
+					return reply(200, `{"code":0}`), nil
+				}
+				return reply(204, ""), nil
+			})
+			var sender Sender
+			if adapter == "webhook" {
+				s, err := NewWebhook(WebhookConfig{URL: "https://example.invalid/hook"}, options(rt))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.CloseIdleConnections()
+				sender = s
+			} else {
+				s, err := NewFeishu(FeishuConfig{URL: testBotURL}, options(rt))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.CloseIdleConnections()
+				sender = s
+			}
+			for range 2 {
+				result, err := sender.Send(t.Context(), m)
+				checkResult(t, result, err, alerts.TaskSent, "")
+			}
+			if string(bodies[0]) != string(bodies[1]) {
+				t.Fatal("reminder payload changed on retry")
+			}
+			if adapter == "webhook" {
+				var p map[string]any
+				if err := json.Unmarshal(bodies[0], &p); err != nil {
+					t.Fatal(err)
+				}
+				if p["schema_version"] != float64(1) || p["event_type"] != "REMINDER" || p["reminder_sequence"] != float64(1) || p["event_id"] != m.Task.EventID || p["incident_id"] != i.ID || p["occurred_at"] != m.Task.OccurredAt.Format(time.RFC3339Nano) {
+					t.Fatal("reminder JSON fields")
+				}
+				if _, ok := p["recovered_at"]; ok {
+					t.Fatal("reminder contains recovery field")
+				}
+			} else {
+				var p feishuPayload
+				if err := json.Unmarshal(bodies[0], &p); err != nil {
+					t.Fatal(err)
+				}
+				for _, part := range []string{"REMINDER\n", "Reminder sequence: 1", i.ID, m.Task.OccurredAt.Format(time.RFC3339Nano)} {
+					if !strings.Contains(p.Content.Text, part) {
+						t.Fatal("reminder text fields")
+					}
+				}
+			}
+			for _, mutate := range []func(*Message){func(m *Message) { m.Task.ReminderSequence = 0 }, func(m *Message) { m.Task.EventID = "wrong" }, func(m *Message) { m.Incident.ReminderCount = 0 }, func(m *Message) { m.Incident.RecoveredAt = testNow }, func(m *Message) { m.Task.OccurredAt = i.ConfirmedAt }, func(m *Message) { m.Incident.ReminderPolicy = nil }} {
+				bad := m
+				mutate(&bad)
+				if _, err := sender.Send(t.Context(), bad); !errors.Is(err, ErrInvalidMessage) {
+					t.Fatal("invalid reminder accepted")
+				}
+			}
+			if len(bodies) != 2 {
+				t.Fatal("invalid reminder performed HTTP I/O")
+			}
+		})
+	}
+}
+
 func TestWebhookMessages(t *testing.T) {
 	var mu sync.Mutex
 	var bodies [][]byte

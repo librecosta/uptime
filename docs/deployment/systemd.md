@@ -2,7 +2,7 @@
 
 This example targets Linux system services (commands below suit Debian/Ubuntu).
 Download the matching Linux archive and `SHA256SUMS` from
-[GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.1.0).
+[GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.2.0).
 Use `amd64` for Intel/AMD x64 or `arm64` for ARM64 Linux.
 
 ## Download and verify
@@ -10,7 +10,7 @@ Use `amd64` for Intel/AMD x64 or `arm64` for ARM64 Linux.
 From a new download directory, use the architecture matching your server:
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.2.0
 ARCH=amd64 # Use arm64 on ARM64 Linux.
 ARCHIVE="librecosta-uptime_${VERSION}_linux_${ARCH}.tar.gz"
 BASE="https://github.com/librecosta/uptime/releases/download/$VERSION"
@@ -47,13 +47,10 @@ The ordinary `storage.bbolt.path: ./data/uptime.db` resolves to
 `StateDirectory=librecosta-uptime` creates and owns the working/state directory
 for the service account, and makes it writable despite `ProtectSystem=strict`.
 The account is not root; its private state directory and `UMask=0077` protect data.
-When alerts are enabled in v0.2.0, `alerts.db` is created beside `uptime.db`, with
-the same service ownership and mode 0600. No extra writable path is needed. Use
-the [current example](../../configs/uptime.example.yaml) for candidate alert
-configuration; the v0.1.0 download above does not include alerts. Run one alert
-executor per database/Redis prefix and keep channel credentials private.
-For a candidate, also install the unit from that candidate's source; its 45-second
-stop budget replaces the older release unit's 30 seconds.
+When alerts are enabled with bbolt, `alerts.db` is created beside `uptime.db`
+with the same service ownership and mode 0600. No extra writable path is needed.
+Use the example configuration from the matching archive. Run one alert executor
+per database/Redis prefix and keep channel credentials private.
 
 ```sh
 /usr/local/bin/uptime version
@@ -115,8 +112,11 @@ sudo systemctl start librecosta-uptime
 curl --fail http://127.0.0.1:18580/readyz
 ```
 
-Do not copy live bbolt files. There is no schema migration or automatic backup
-task. With Redis, alert state uses the independent
+Do not copy live bbolt files. When upgrading to v0.2.1 with alerts enabled,
+alert storage upgrades before workers start. Stop all writers before backing up
+and follow the
+[alert migration contract](../../contracts/alerts.md#alert-schema-v2-migration-and-history).
+There is no automatic backup task. With Redis, alert state uses the independent
 `<storage.redis.key_prefix>:alerts:v1:` namespace in the same database; back up
 monitoring and alert keys together through the Redis operator's RDB/AOF procedure.
 
@@ -151,4 +151,5 @@ exit before alert storage closes, followed by monitoring storage. Increase
 `TimeoutStopSec` when increasing `server.shutdown_timeout`. A systemd
 stop timeout can still force termination; it cannot make blocked I/O safe.
 Keep the previous binary and offline backup until the upgrade is verified.
-There are no install/uninstall CLI commands, automatic upgrades or migrations.
+There are no install/uninstall CLI commands or automatic binary upgrades.
+After an alert schema upgrade, rollback requires the complete pre-upgrade backup.

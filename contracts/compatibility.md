@@ -122,7 +122,7 @@ login, push or release, and do not alter P7-A's archive contract.
 ## YAML Configuration (P2)
 
 The [official example](../configs/uptime.example.yaml) shows the supported keys.
-The root sections are `server`, `storage`, `uptime`, `alerts`, `ui`, `auth`, and `endpoints`.
+The root sections are `server`, `storage`, `uptime`, `alerts`, `monitor`, `ui`, `auth`, and `endpoints`.
 YAML v3 decoding is strict throughout, including inactive branches: unknown and
 duplicate keys, multiple documents, wrong scalar/container types, explicit null,
 and merge keys fail. Use omission for defaults and `""`/`[]`/`{}` for intentional
@@ -144,13 +144,17 @@ TLS/Auth disabled branches are nil; exactly the selected storage branch is non-n
 | `server.address` | `127.0.0.1:18580` |
 | `server.shutdown_timeout` | `10s` |
 | `server.tls.enabled`, `auth.enabled` | `false` |
+| `auth.protect_uptime` | `true` |
+| `monitor.enabled` | `false` |
 | `storage.type` | `bbolt` |
 | `storage.bbolt.path` | `./data/uptime.db` |
 | `storage.redis.key_prefix` | `fiber:uptime` |
 | `uptime.interval` | `10s` |
 | `uptime.retention`, `uptime.window` | `90d`, `30d` |
 | `uptime.timezone` | `UTC` |
-| `alerts.enabled`, `alerts.consecutive_failures` | `false`, `3` |
+| `alerts.enabled`, `alerts.consecutive_failures`, `alerts.recovery_successes` | `false`, `3`, `1` |
+| `alerts.history_enabled` | `false` (requires enabled alerts and valid enabled Basic Auth) |
+| `alerts.reminder_interval`, `alerts.reminder_limit` | `0s`, `0` (disabled) |
 | `alerts.channels`, endpoint `alert_channels` | no channels; all defined channels when alerts are enabled |
 | `ui.path`, `ui.title` | `/uptime`, `Service Status` |
 | `ui.description` | `Current service availability.` |
@@ -195,10 +199,12 @@ and make no notification requests.
 | Storage | literal `bbolt` or `redis`; bbolt path non-empty; Redis URL has redis/rediss scheme and host, no fragment, and passes pinned go-redis ParseURL |
 | Redis prefix | non-empty after env expansion; no leading/trailing colon or whitespace; no control characters; internal colons allowed |
 | Auth | one required NFC-normalized username without colon/Unicode controls; bcrypt-only hash ($2a$/$2b$/$2y$), structure plus bcrypt.Cost validation; no plaintext field |
+| Monitor | literal boolean enabled; requires enabled Basic Auth with valid credentials; no network or metrics collection during configuration validation |
 | Uptime | interval >= 1s; canonical positive integer `Nd` calendar spans without leading zeros or overflow; window <= retention; Redis retention <= 106750d (no such limit for bbolt); UTC/IANA/Local timezone |
-| Alerts | optional incident tracking and delivery; literal boolean enabled; integer consecutive_failures 1..10, including when disabled; unique stable channel IDs and webhook/feishu branches; see [alert contract](alerts.md#configuration-and-delivery-runtime-c3) |
+| Alerts | optional incident tracking and delivery; literal boolean enabled; integer consecutive_failures and recovery_successes 1..10, including when disabled; unique stable channel IDs and webhook/feishu branches; see [alert contract](alerts.md#configuration-and-delivery-runtime-c3) |
+| Reminder policy | when alerts are enabled: `0s`/`0` disables reminders, otherwise interval `5m`..`720h` and limit 1..10; persisted snapshots keep their original policy |
 | Alert routing | when enabled, omission selects all channels, explicit [] selects none, explicit IDs must be unique and defined; confirmation snapshots persist across configuration changes |
-| UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; non-empty title; finite 0 < yellow <= green <= 1 |
+| UI | clean absolute non-root path, no trailing slash, no `/livez` or `/readyz`; cannot overlap reserved `/alerts` or enabled `/monitor` as ancestor/descendant, including decoded/case aliases; non-empty title; finite 0 < yellow <= green <= 1 |
 | UI text | description/footer must be non-empty; omission uses LibreCosta defaults; favicon may be empty, otherwise root-relative or absolute HTTP(S) URL |
 | Endpoint identity | at least one for serve/config check; maintenance also allows explicit `endpoints: []`; unique literal `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` IDs; non-empty name |
 | Endpoint request | literal uppercase GET/HEAD; http/https URL with host, no userinfo/fragment, query allowed |
@@ -329,11 +335,18 @@ password comparison or an additional product cost policy. Disabled auth skips en
 and semantic validation and leaves Auth nil.
 
 Fiber official BasicAuth protects exactly `ui.path` and paths starting with
-`ui.path + "/"`. For `/status`, `/status2` and `/status-page` stay outside auth.
+`ui.path + "/"` by default. For `/status`, `/status2` and `/status-page` stay outside
+that namespace. `auth.protect_uptime: false` publishes both the Uptime page and
+its `<ui.path>/api/status` API. Enabled `/monitor` and its slash descendants always
+require authentication, independently of that setting. The reserved `/alerts`
+namespace is protected when auth is enabled; its read-only page/API is registered
+only with `alerts.history_enabled`. See the [history contract](alerts.md#read-only-alert-history-v021-c).
+Guards use the same Fiber-normalized path as the upstream handlers; escaped aliases
+cannot expose a protected handler. Similar prefixes are not namespace matches.
 Health always remains public. Missing/wrong credentials receive Fiber's 401 Basic
 challenge with fixed realm `LibreCosta Uptime`, `Cache-Control: no-store`, and
 `Vary: Authorization`; the response body is not a product ABI. Correct credentials
-permit the dashboard/API; authenticated unknown descendants remain 404.
+permit the dashboard/API; authenticated unknown Uptime/alerts descendants remain 404.
 BasicAuth constructor rejection becomes the safe operational error
 `cannot initialize Basic Auth`, before Uptime workers start.
 
@@ -367,8 +380,32 @@ and produce no per-request error log. Target DOWN never changes readiness.
 The configured `ui.path` and `<ui.path>/api/status` are upstream dashboard/API
 routes. GET/HEAD `/` returns HTTP 302 to the validated `ui.path`, without copying the
 incoming query. The redirect is public; the target dashboard/API still requires
-Basic Auth when enabled. Other root methods and unmatched paths remain 404. Only YAML endpoints
+Basic Auth when enabled and `auth.protect_uptime` is true. Other root methods and
+unmatched paths remain 404. Only YAML endpoints
 are monitored; no self service is manufactured.
+
+### Optional process Monitor
+
+`monitor.enabled` constructs the native Fiber Contrib Monitor v1.2.4 middleware
+only when true. GET `/monitor` returns its HTML dashboard; the same request with
+`Accept: application/json` returns a snapshot. HEAD and slash descendants use the
+same upstream handler and authentication; other methods receive upstream 405 after
+authentication. No product HTTP API or frontend assets are added.
+
+Mount the Monitor auth guard before global Monitor, followed by Recover, health,
+root redirect, shared BasicAuth and Uptime. Monitor's `Next` instruments all other
+requests, including authentication failures and recovered 5xx responses, while its
+own requests are excluded. Keep native 3s refresh/cache and disabled exact GC pause
+metrics. Unsupported system metrics follow upstream availability. No metrics
+database, background sampler or lifecycle hook is added.
+
+When disabled, no Monitor middleware or request-time/ongoing collection runs. The
+imported gopsutil dependency still reads its baseline once during package init,
+before YAML loading; this accepted upstream behavior also applies to CLI commands.
+Monitoring/alert workers, health semantics, storage ownership and shutdown remain
+unchanged. A valid pre-Monitor YAML keeps the default Uptime access policy.
+
+### Storage and shutdown
 
 Startup opens selected storage, completes preflight Ping, and binds before
 constructing Fiber Uptime. Redis preflight has a five-second timeout with go-redis
