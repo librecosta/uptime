@@ -7,7 +7,7 @@ with YAML and backed by bbolt by default, so no external database is needed.
 
 ## Quick Start
 
-Download the archive for your system from [GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.1.0):
+Download the archive for your system from [GitHub Releases](https://github.com/librecosta/uptime/releases/tag/v0.2.0):
 Linux and macOS (`darwin`) support amd64 and arm64; Windows supports amd64.
 Choose amd64 for Intel/AMD x64 or arm64 for Apple Silicon and ARM64 Linux.
 Verify the download against the release's `SHA256SUMS`, then extract the `.tar.gz`
@@ -41,19 +41,19 @@ upgrading. The default listener accepts connections only from the local machine.
 
 ### Other installation options
 
-For Docker on Linux amd64/arm64, run `docker pull ghcr.io/librecosta/uptime:v0.1.0`,
+For Docker on Linux amd64/arm64, run `docker pull ghcr.io/librecosta/uptime:v0.2.0`,
 then follow the
-[Docker guide](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/docker.md)
+[Docker guide](https://github.com/librecosta/uptime/blob/v0.2.0/docs/deployment/docker.md)
 to mount configuration and persistent storage.
 
 With **Go 1.26+**, you can also install from the versioned module:
 
 ```sh
-go install github.com/librecosta/uptime/cmd/uptime@v0.1.0
+go install github.com/librecosta/uptime/cmd/uptime@v0.2.0
 ```
 
 Put Go's binary directory first in `PATH` and save the
-[example YAML](https://github.com/librecosta/uptime/blob/v0.1.0/configs/uptime.example.yaml)
+[example YAML](https://github.com/librecosta/uptime/blob/v0.2.0/configs/uptime.example.yaml)
 as `uptime.yaml`. Use `uptime` in place of `./uptime` below. Go installs retain
 `dev` / `unknown` version metadata; release archives include the version and commit.
 
@@ -70,7 +70,7 @@ as `uptime.yaml`. Use `uptime` in place of `./uptime` below. Go installs retain
 
 ## Configuration
 
-Start with the commented [example configuration](https://github.com/librecosta/uptime/blob/v0.1.0/configs/uptime.example.yaml).
+Start with the commented [example configuration](https://github.com/librecosta/uptime/blob/v0.2.0/configs/uptime.example.yaml).
 Run `config check` after editing it and restart `serve` to apply changes.
 Validation does not open the database or start monitoring; enabled TLS certificate
 and key files are checked before startup.
@@ -88,7 +88,7 @@ Endpoint IDs are persistent identities. Keep them stable: changing an ID starts
 separate history, and removing an endpoint from YAML does not delete its history.
 
 For all fields and validation rules, see the
-[configuration reference](https://github.com/librecosta/uptime/blob/v0.1.0/contracts/compatibility.md#yaml-configuration-p2).
+[configuration reference](https://github.com/librecosta/uptime/blob/v0.2.0/contracts/compatibility.md#yaml-configuration-p2).
 
 ### Storage
 
@@ -115,7 +115,7 @@ by the certificate. For Basic Auth, enable `auth.enabled` and supply its usernam
 and **bcrypt password hash**, never a plaintext password. For non-ASCII passwords,
 hash the NFC-normalized password. Basic Auth does not encrypt credentials.
 
-### Process Monitor (develop)
+### Process Monitor (v0.2.1 candidate)
 
 Set `monitor.enabled: true` to enable Fiber Contrib Monitor's native dashboard at
 `/monitor`, or request the same path with `Accept: application/json` for a snapshot.
@@ -124,23 +124,19 @@ and excludes its own requests. Unsupported metrics follow upstream availability.
 It requires enabled Basic Auth with valid credentials; use HTTPS for remote access.
 
 `auth.protect_uptime` defaults to `true`. Setting it to `false` publishes both the
-Uptime dashboard and `<ui.path>/api/status`, while Monitor remains authenticated.
-Monitor is off by default, with no middleware or ongoing collection; its system
-dependency still performs one-time initialization. These options are on `develop`, outside
-the v0.1.0 downloads above.
+Uptime dashboard and `<ui.path>/api/status`. Monitor and alert history still
+require authentication. Monitor is off by default. These options are available
+on `develop` for v0.2.1.
 
-## Alerts (v0.2.0 development)
+## Alerts
 
-The `develop` branch adds optional DOWN/RECOVERED notifications through Generic
-HTTP Webhook or Feishu/Lark custom bots; these are not part of the v0.1.0 downloads
-above. Alerts are disabled by default. Start with the [development example](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml).
+Optional DOWN/RECOVERED notifications are available through a generic HTTP
+webhook or a Feishu/Lark custom bot. Alerts are disabled by default. Start with
+the [example configuration for v0.2.0](https://github.com/librecosta/uptime/blob/v0.2.0/configs/uptime.example.yaml).
 Enable `alerts.enabled`, define stable channel IDs in `alerts.channels`, and
 optionally select `alert_channels` for each endpoint. Omission selects all channels;
-`[]` sends none. The consecutive failure threshold defaults to three. On `develop`,
-`alerts.recovery_successes` sets the consecutive successes required to resolve an
-incident (1–10, default one). Optional reminders require `alerts.reminder_interval`
-from `5m` through `720h` (30 days) and `alerts.reminder_limit` from 1 through 10;
-`0s` and `0` disable them. Restart to apply configuration changes.
+`[]` sends none. The consecutive failure threshold defaults to three. Restart to
+apply configuration changes.
 
 Run **one alert executor per database/Redis prefix**. Incidents and delivery tasks
 persist separately from monitoring history: bbolt uses a sibling `alerts.db`, which
@@ -149,7 +145,16 @@ to ten attempts; crashes or uncertain responses can cause duplicate messages, an
 delivery is not guaranteed. Webhook receivers should deduplicate by EventID. Removing a
 channel leaves its pending tasks waiting; keep its ID/configuration available for
 historical incidents. See the [alert contract](https://github.com/librecosta/uptime/blob/develop/contracts/alerts.md)
-for retry, security and ownership constraints.
+for retry, security and ownership constraints. Use an independent health check
+to detect complete process failure.
+
+### Recovery, reminders, and history (v0.2.1 candidate)
+
+In the [candidate configuration](https://github.com/librecosta/uptime/blob/develop/configs/uptime.example.yaml),
+`alerts.recovery_successes` controls how many consecutive successes resolve an
+incident (1–10, default one). To enable reminders, set `alerts.reminder_interval`
+from `5m` to `720h` (30 days) and `alerts.reminder_limit` from 1 to 10. The
+defaults `0s` and `0` disable reminders.
 
 Enable `alerts.history_enabled` with both alerts and Basic Auth enabled to browse
 read-only incident history at `/alerts`. Expand an incident for paginated channel
@@ -157,13 +162,9 @@ delivery details, including reminders, retries and cancellation. Times are UTC;
 retired endpoints use their saved ID. The history page stays private even with
 `auth.protect_uptime: false`; it provides no editing or resend actions.
 
-This process cannot notify you after it has stopped completely; use an independent
-external health check.
 The candidate [Docker](https://github.com/librecosta/uptime/blob/develop/docs/deployment/docker.md#stop-maintain-back-up-and-upgrade)
 and [systemd](https://github.com/librecosta/uptime/blob/develop/docs/deployment/systemd.md#stop-back-up-maintain-and-upgrade)
-guides cover paired database backup and restore. See the prepared
-[v0.2.0 release notes](https://github.com/librecosta/uptime/blob/develop/docs/releases/v0.2.0.md)
-for upgrade constraints; this version has not yet been released.
+guides cover backup and restore before the alert storage upgrade.
 
 ## Service Management
 
@@ -216,14 +217,14 @@ remain unauthenticated when Basic Auth is enabled. The default dashboard is at
 
 ## Deployment and Development
 
-- [Docker deployment](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/docker.md): use the GHCR Linux amd64/arm64
+- [Docker deployment](https://github.com/librecosta/uptime/blob/v0.2.0/docs/deployment/docker.md): use the GHCR Linux amd64/arm64
   image with mounted configuration and persistent data in a non-root container.
-- [systemd deployment](https://github.com/librecosta/uptime/blob/v0.1.0/docs/deployment/systemd.md): run on Linux with a dedicated
+- [systemd deployment](https://github.com/librecosta/uptime/blob/v0.2.0/docs/deployment/systemd.md): run on Linux with a dedicated
   service account, persistent state, and graceful shutdown.
-- [Build local distribution archives](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/playbook.md#distribution-preview-p7-a)
+- [Build local distribution archives](https://github.com/librecosta/uptime/blob/develop/.agents/playbook.md#distribution-preview-p7-a)
   for Linux, macOS, and Windows, including checksums.
-- [Development workflow](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/playbook.md), [architecture](https://github.com/librecosta/uptime/blob/v0.1.0/.agents/architecture.md),
-  [engineering contracts](https://github.com/librecosta/uptime/tree/v0.1.0/contracts), and [changelog](https://github.com/librecosta/uptime/blob/v0.1.0/CHANGELOG.md).
+- [Development workflow](https://github.com/librecosta/uptime/blob/develop/.agents/playbook.md), [architecture](https://github.com/librecosta/uptime/blob/develop/.agents/architecture.md),
+  [engineering contracts](https://github.com/librecosta/uptime/tree/develop/contracts), and [changelog](https://github.com/librecosta/uptime/blob/develop/CHANGELOG.md).
 
 The deployment guides cover secure exposure, upgrades, and offline bbolt backups.
 
@@ -237,4 +238,4 @@ provides the optional process and HTTP dashboard.
 
 ## License
 
-[MIT](https://github.com/librecosta/uptime/blob/v0.1.0/LICENSE). Copyright (c) 2026 LibreCosta.
+[MIT](https://github.com/librecosta/uptime/blob/v0.2.0/LICENSE). Copyright (c) 2026 LibreCosta.

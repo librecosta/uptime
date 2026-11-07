@@ -6,7 +6,7 @@ selects the matching architecture automatically.
 ## Get the image
 
 ```sh
-docker pull ghcr.io/librecosta/uptime:v0.1.0
+docker pull ghcr.io/librecosta/uptime:v0.2.0
 ```
 
 Use an explicit version tag for controlled upgrades. The image uses Distroless
@@ -21,7 +21,7 @@ the [container example](../../deploy/docker/uptime.example.yaml):
 
 ```sh
 curl --fail --location --output uptime.yaml \
-  https://raw.githubusercontent.com/librecosta/uptime/v0.1.0/deploy/docker/uptime.example.yaml
+  https://raw.githubusercontent.com/librecosta/uptime/v0.2.0/deploy/docker/uptime.example.yaml
 ```
 
 Edit the endpoints before starting. Keep `server.address:
@@ -34,7 +34,7 @@ on Linux, use `sudo chown root:65532 uptime.yaml` and `sudo chmod 0640 uptime.ya
 Do not mount TLS keys or configuration from a location the service cannot read.
 
 ```sh
-IMAGE=ghcr.io/librecosta/uptime:v0.1.0
+IMAGE=ghcr.io/librecosta/uptime:v0.2.0
 docker run --rm "$IMAGE" version
 docker run --rm \
   --mount "type=bind,src=$(pwd)/uptime.yaml,dst=/etc/uptime/uptime.yaml,readonly" \
@@ -60,17 +60,18 @@ absolute path at `/data`. Existing data must also have compatible ownership.
 The image does not run root startup scripts, change host ownership, or use mode 777.
 
 PowerShell uses the same Docker flags, on one line or with backtick continuations.
-Download the same example YAML and set `$IMAGE = 'ghcr.io/librecosta/uptime:v0.1.0'`.
+Download the same example YAML and set `$IMAGE = 'ghcr.io/librecosta/uptime:v0.2.0'`.
 Resolve the source first with `$configPath = (Resolve-Path ./uptime.yaml).Path`,
 then pass `--mount "type=bind,src=$configPath,dst=/etc/uptime/uptime.yaml,readonly"`.
 Docker Desktop must have access to that Windows path; Linux ownership commands
 above apply to Linux hosts.
 
-Alerts are available in the v0.2.0 candidate, not the v0.1.0 image above. For a
-candidate built from source, add the `alerts` section from the
-[current example](../../configs/uptime.example.yaml) to the mounted YAML. Use one
-alert executor per data directory/Redis prefix. Keep channel credentials private;
-no real credentials are needed for `enabled: true` with `channels: []`.
+To enable alerts, add the `alerts` section from the example configuration for
+your version to the mounted YAML. The
+[v0.2.0 example](https://github.com/librecosta/uptime/blob/v0.2.0/configs/uptime.example.yaml)
+covers Webhook and Feishu/Lark channels. Use one alert executor per data
+directory/Redis prefix and keep channel credentials private. An empty channel
+list lets you record incidents without sending notifications.
 
 ## Health and exposure
 
@@ -173,10 +174,11 @@ To upgrade, pull the chosen version from GHCR and verify its version with
 volume and configuration** and the new image. Recreate the container after editing
 bind-mounted configuration too, so atomically replaced files are remounted; there
 is no hot reload. Never copy a live bbolt file or run
-two serving containers against it. Alert Schema v1 upgrades to v2 on enabled
-startup; stop all writers first and see the
+two serving containers against it. When upgrading to v0.2.1, enabled alert
+storage upgrades on startup. Stop all writers before backing up and see the
 [migration contract](../../contracts/alerts.md#alert-schema-v2-migration-and-history).
-No automatic backup or update is performed; retain the prior binary/image and offline backup until verification.
+Keep the previous image and complete pre-upgrade backup until verification. To
+roll back after migration, restore that backup with the previous image.
 
 ## Optional: build from source
 

@@ -29,7 +29,7 @@ auth:
   # Enable Basic Auth; health endpoints always stay public.
   # The variables below are only required when enabled. Use TLS or a trusted TLS proxy.
   enabled: false
-  # false publishes the Uptime page AND its status API; Monitor stays private.
+  # false makes the Uptime page and status API public. Monitor and alert history stay private.
   protect_uptime: true
   basic:
     username: "${UPTIME_AUTH_USERNAME}"
